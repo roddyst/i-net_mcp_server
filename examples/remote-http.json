@@ -1,0 +1,13 @@
+{
+  "//": "Zentral gehosteter Server. Jeder Nutzer schickt seinen eigenen HelpDesk-Token mit.",
+  "//start": "inet-helpdesk-mcp --transport http --host 0.0.0.0 --port 8000 --base-url https://helpdesk.example.com:9000",
+  "mcpServers": {
+    "i-net-helpdesk": {
+      "type": "http",
+      "url": "https://mcp.example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer dein-access-token"
+      }
+    }
+  }
+}

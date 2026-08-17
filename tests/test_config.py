@@ -1,0 +1,108 @@
+from __future__ import annotations
+
+import pytest
+
+from inet_helpdesk_mcp.config import (
+    Settings,
+    normalize_base_url,
+    resolve_request_config,
+)
+from inet_helpdesk_mcp.errors import AuthenticationError, ConfigurationError
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("https://hd.example.com:9000/", "https://hd.example.com:9000"),
+        ("hd.example.com:9000", "http://hd.example.com:9000"),
+        ("https://hd.example.com/api", "https://hd.example.com"),
+    ],
+)
+def test_normalize_base_url(raw: str, expected: str) -> None:
+    assert normalize_base_url(raw) == expected
+
+
+def test_normalize_base_url_rejects_other_schemes() -> None:
+    with pytest.raises(ConfigurationError):
+        normalize_base_url("ftp://hd.example.com")
+
+
+def test_env_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("INET_BASE_URL", "https://hd.example.com:9000/")
+    monkeypatch.setenv("INET_TOKEN", "abc")
+    monkeypatch.setenv("INET_READ_ONLY", "yes")
+    monkeypatch.setenv("INET_PORT", "9999")
+
+    settings = Settings.from_env()
+
+    assert settings.base_url == "https://hd.example.com:9000"
+    assert settings.token == "abc"
+    assert settings.read_only is True
+    assert settings.port == 9999
+    # A configured base URL disables the override header unless asked for.
+    assert settings.allow_url_header is False
+
+
+def test_env_settings_reject_bad_boolean(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("INET_READ_ONLY", "maybe")
+    with pytest.raises(ConfigurationError):
+        Settings.from_env()
+
+
+def test_http_transport_disables_local_files() -> None:
+    settings = Settings(base_url="https://hd", token="t", transport="http").finalize()
+    assert settings.allow_local_files is False
+
+
+def test_url_header_allowed_when_no_base_url() -> None:
+    settings = Settings(transport="http").finalize()
+    assert settings.allow_url_header is True
+
+
+def test_request_header_beats_configured_token() -> None:
+    settings = Settings(base_url="https://hd", token="configured").finalize()
+    config = resolve_request_config(settings, {"Authorization": "Bearer from-client"})
+    assert config.authorization == "Bearer from-client"
+
+
+def test_configured_token_used_without_header() -> None:
+    settings = Settings(base_url="https://hd", token="configured").finalize()
+    assert resolve_request_config(settings).authorization == "Bearer configured"
+
+
+def test_basic_auth_from_settings() -> None:
+    settings = Settings(base_url="https://hd", username="u", password="p").finalize()
+    config = resolve_request_config(settings)
+    assert config.authorization is None
+    assert (config.username, config.password) == ("u", "p")
+
+
+def test_base_url_header_used_when_allowed() -> None:
+    settings = Settings(transport="http").finalize()
+    config = resolve_request_config(
+        settings, {"authorization": "Bearer t", "X-Inet-Base-Url": "hd.example.com:9000/"}
+    )
+    assert config.base_url == "http://hd.example.com:9000"
+
+
+def test_base_url_header_rejected_when_not_allowed() -> None:
+    settings = Settings(base_url="https://hd", token="t", transport="http").finalize()
+    with pytest.raises(ConfigurationError):
+        resolve_request_config(settings, {"X-Inet-Base-Url": "https://evil.example.com"})
+
+
+def test_missing_base_url_is_reported() -> None:
+    settings = Settings(transport="http").finalize()
+    with pytest.raises(ConfigurationError):
+        resolve_request_config(settings, {"authorization": "Bearer t"})
+
+
+def test_missing_credentials_are_reported() -> None:
+    settings = Settings(base_url="https://hd").finalize()
+    with pytest.raises(AuthenticationError):
+        resolve_request_config(settings, {})
+
+
+def test_describe_hides_secrets() -> None:
+    settings = Settings(base_url="https://hd", token="super-secret").finalize()
+    assert "super-secret" not in settings.describe()

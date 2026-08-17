@@ -1,0 +1,14 @@
+{
+  "//": "Wie claude-desktop.json, aber nur lesend: create_ticket und apply_ticket_action werden nicht angeboten.",
+  "mcpServers": {
+    "i-net-helpdesk": {
+      "command": "inet-helpdesk-mcp",
+      "args": ["--read-only"],
+      "env": {
+        "INET_BASE_URL": "https://helpdesk.example.com:9000",
+        "INET_USERNAME": "servicedesk",
+        "INET_PASSWORD": "geheim"
+      }
+    }
+  }
+}

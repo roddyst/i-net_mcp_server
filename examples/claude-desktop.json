@@ -1,0 +1,17 @@
+{
+  "//": "Claude Desktop / Claude Code: lokaler stdio-Server. Datei: claude_desktop_config.json bzw. .mcp.json",
+  "mcpServers": {
+    "i-net-helpdesk": {
+      "command": "uvx",
+      "args": [
+        "--from",
+        "git+https://github.com/roddyst/i-net_mcp_server",
+        "inet-helpdesk-mcp"
+      ],
+      "env": {
+        "INET_BASE_URL": "https://helpdesk.example.com:9000",
+        "INET_TOKEN": "dein-access-token"
+      }
+    }
+  }
+}

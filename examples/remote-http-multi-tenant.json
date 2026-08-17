@@ -1,0 +1,15 @@
+{
+  "//": "Server ohne feste --base-url: der Client wählt zusätzlich das HelpDesk-System aus.",
+  "//start": "inet-helpdesk-mcp --transport http --host 0.0.0.0 --port 8000",
+  "//warnung": "Damit wird der Server zum Proxy für beliebige Adressen - nur in vertrauenswürdigen Netzen einsetzen.",
+  "mcpServers": {
+    "i-net-helpdesk": {
+      "type": "http",
+      "url": "https://mcp.example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer dein-access-token",
+        "X-Inet-Base-Url": "https://helpdesk.kunde-a.example.com:9000"
+      }
+    }
+  }
+}
