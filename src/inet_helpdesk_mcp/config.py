@@ -88,6 +88,7 @@ class Settings:
     verify_tls: bool = True
     allow_local_files: bool = True
     allow_url_header: bool = False
+    ignore_client_auth: bool = False
     read_only: bool = False
     default_locale: str = "en"
     # Remember which of the two derived flags the operator set explicitly, so
@@ -117,6 +118,7 @@ class Settings:
             verify_tls=True if verify_tls is None else verify_tls,
             allow_local_files=True if allow_local_files is None else allow_local_files,
             allow_url_header=bool(allow_url_header),
+            ignore_client_auth=bool(_env_bool("IGNORE_CLIENT_AUTH")),
             read_only=bool(_env_bool("READ_ONLY")),
             default_locale=_env("LOCALE") or "en",
             url_header_explicit=allow_url_header is not None,
@@ -158,6 +160,8 @@ class Settings:
             auth = f"basic auth as {self.username} (from configuration)"
         else:
             auth = "per-request Authorization header"
+        if self.ignore_client_auth:
+            auth += " (client Authorization headers ignored)"
         return (
             f"transport={self.transport} "
             f"base_url={self.base_url or '<from X-Inet-Base-Url header>'} "
@@ -173,6 +177,8 @@ class RequestConfig:
     authorization: str | None = None
     username: str | None = None
     password: str | None = None
+    #: Where the credentials came from, for diagnostics. Never the secret itself.
+    source: str = "configuration"
 
     def auth_headers(self) -> dict[str, str]:
         return {"Authorization": self.authorization} if self.authorization else {}
@@ -185,6 +191,8 @@ def resolve_request_config(
 
     Client supplied headers win: that is what lets one HTTP server instance
     serve several users, each with their own i-net HelpDesk access token.
+    With ``ignore_client_auth`` the configured credentials win instead, for
+    deployments that authenticate every call as one service account.
     """
     header_map = {k.lower(): v for k, v in (headers or {}).items()}
 
@@ -205,15 +213,24 @@ def resolve_request_config(
         )
 
     authorization = header_map.get("authorization")
-    if authorization and authorization.strip():
-        return RequestConfig(base_url=base_url, authorization=authorization.strip())
+    if authorization and authorization.strip() and not settings.ignore_client_auth:
+        return RequestConfig(
+            base_url=base_url,
+            authorization=authorization.strip(),
+            source="Authorization header of this request",
+        )
     if settings.token:
-        return RequestConfig(base_url=base_url, authorization=f"Bearer {settings.token}")
+        return RequestConfig(
+            base_url=base_url,
+            authorization=f"Bearer {settings.token}",
+            source="bearer token from the server configuration",
+        )
     if settings.username and settings.password:
         return RequestConfig(
             base_url=base_url,
             username=settings.username,
             password=settings.password,
+            source=f"basic auth as {settings.username}, from the server configuration",
         )
     raise AuthenticationError(
         "No credentials available. Set INET_TOKEN (bearer token) or "

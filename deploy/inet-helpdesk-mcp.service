@@ -1,0 +1,46 @@
+[Unit]
+Description=i-net HelpDesk MCP server
+Documentation=https://github.com/roddyst/i-net_mcp_server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=inet-mcp
+Group=inet-mcp
+
+# Zugangsdaten und Basis-URL: siehe deploy/inet-helpdesk-mcp.env.example
+EnvironmentFile=/etc/inet-helpdesk-mcp/env
+
+ExecStart=/opt/inet-helpdesk-mcp/venv/bin/inet-helpdesk-mcp \
+    --transport http \
+    --host 127.0.0.1 \
+    --port 8765 \
+    --ignore-client-auth
+
+Restart=on-failure
+RestartSec=5s
+
+# Der Dienst braucht weder Schreibrechte noch neue Privilegien.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+# Nur ausgehende Verbindungen zum HelpDesk plus der lokale Listener.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

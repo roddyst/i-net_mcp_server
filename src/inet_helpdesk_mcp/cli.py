@@ -56,6 +56,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Let clients select the HelpDesk server with an X-Inet-Base-Url header.",
     )
     parser.add_argument(
+        "--ignore-client-auth",
+        action="store_true",
+        help=(
+            "Always use the configured credentials and ignore Authorization headers "
+            "sent by clients. Use this when the server owns a service account token."
+        ),
+    )
+    parser.add_argument(
         "--no-local-files",
         action="store_true",
         help="Refuse attachments that reference a path on the server's file system.",
@@ -100,6 +108,8 @@ def settings_from_args(args: argparse.Namespace) -> Settings:
     if args.allow_url_header:
         updates["allow_url_header"] = True
         updates["url_header_explicit"] = True
+    if args.ignore_client_auth:
+        updates["ignore_client_auth"] = True
     if args.no_local_files:
         updates["allow_local_files"] = False
         updates["local_files_explicit"] = True
@@ -123,10 +133,17 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Configuration error: {exc}", file=sys.stderr)
         return 2
 
-    if settings.transport == "stdio" and not settings.has_credentials:
+    if not settings.has_credentials and (
+        settings.transport == "stdio" or settings.ignore_client_auth
+    ):
+        reason = (
+            "the stdio transport"
+            if settings.transport == "stdio"
+            else "--ignore-client-auth"
+        )
         print(
-            "Warning: no token and no user name configured. For the stdio transport "
-            "set INET_TOKEN (or INET_USERNAME/INET_PASSWORD) - tool calls will fail "
+            f"Warning: no token and no user name configured, but {reason} needs one. "
+            "Set INET_TOKEN (or INET_USERNAME/INET_PASSWORD) - tool calls will fail "
             "otherwise.",
             file=sys.stderr,
         )

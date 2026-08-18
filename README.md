@@ -110,6 +110,23 @@ der Header abgeschaltet, außer er wird mit `--allow-url-header` erlaubt).
 > HelpDesk mit dem durchgereichten Token. Wenn er über das lokale Netz hinaus
 > erreichbar sein soll, gehört ein Reverse Proxy mit HTTPS davor.
 
+### Variante: fester Service-Account statt Token pro Nutzer
+
+Läuft der Server auf derselben Maschine wie der Agent, ist oft ein einziger
+technischer Benutzer gewollt. Dann liegt der Token auf dem Server und
+`--ignore-client-auth` sorgt dafür, dass ein `Authorization`-Header des Agenten
+ihn **nicht** überschreibt (Agenten schicken solche Header gelegentlich für
+eigene Zwecke mit — ohne den Schalter landet der beim HelpDesk und jeder Aufruf
+scheitert mit 401):
+
+```bash
+INET_BASE_URL=https://helpdesk.example.com:9000 INET_TOKEN=… \
+  inet-helpdesk-mcp --transport http --host 127.0.0.1 --port 8765 --ignore-client-auth
+```
+
+Fertige systemd-Unit, Env-File und Schritt-für-Schritt-Anleitung dafür:
+[`deploy/`](deploy/README.md).
+
 ---
 
 ## Werkzeuge
@@ -201,6 +218,7 @@ Kommandozeile gewinnt.
 | `INET_VERIFY_TLS` | `--no-verify-tls` | `true` | TLS-Zertifikat des HelpDesk prüfen |
 | `INET_READ_ONLY` | `--read-only` | `false` | Schreibende Tools ausblenden |
 | `INET_ALLOW_URL_HEADER` | `--allow-url-header` | nur ohne `INET_BASE_URL` | `X-Inet-Base-Url`-Header erlauben |
+| `INET_IGNORE_CLIENT_AUTH` | `--ignore-client-auth` | `false` | `Authorization`-Header der Clients ignorieren und immer die konfigurierten Zugangsdaten verwenden |
 | `INET_ALLOW_LOCAL_FILES` | `--no-local-files` | `true` bei stdio, sonst `false` | Anhänge per Dateipfad erlauben |
 | `INET_LOCALE` | `--locale` | `en` | Standardsprache der Suchphrase |
 

@@ -93,6 +93,7 @@ def build_server(settings: Settings) -> MCPServer:
             "read_only": settings.read_only,
             "allow_local_file_attachments": settings.allow_local_files,
             "allow_base_url_header": settings.allow_url_header,
+            "ignore_client_authorization": settings.ignore_client_auth,
         }
         try:
             config = tools.request_config(ctx)
@@ -102,9 +103,7 @@ def build_server(settings: Settings) -> MCPServer:
             return info
 
         info["base_url"] = config.base_url
-        info["authentication"] = (
-            "bearer/authorization header" if config.authorization else "basic auth"
-        )
+        info["authentication"] = config.source
         async with HelpdeskClient(
             config, timeout=settings.timeout, verify=settings.verify_tls
         ) as client:

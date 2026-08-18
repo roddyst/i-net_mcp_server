@@ -62,3 +62,18 @@ def test_read_only_and_tls_switches() -> None:
 def test_unknown_transport_is_rejected() -> None:
     with pytest.raises(SystemExit):
         parse(["--transport", "carrier-pigeon"])
+
+
+def test_ignore_client_auth_flag() -> None:
+    settings = parse(
+        ["--transport", "http", "--base-url", "https://hd", "--token", "t",
+         "--ignore-client-auth"]
+    )
+
+    assert settings.ignore_client_auth is True
+
+
+def test_client_auth_is_forwarded_by_default() -> None:
+    settings = parse(["--transport", "http", "--base-url", "https://hd"])
+
+    assert settings.ignore_client_auth is False

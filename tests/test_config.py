@@ -106,3 +106,62 @@ def test_missing_credentials_are_reported() -> None:
 def test_describe_hides_secrets() -> None:
     settings = Settings(base_url="https://hd", token="super-secret").finalize()
     assert "super-secret" not in settings.describe()
+
+
+def test_ignore_client_auth_keeps_configured_token() -> None:
+    settings = Settings(
+        base_url="https://hd", token="service-account", ignore_client_auth=True
+    ).finalize()
+
+    config = resolve_request_config(settings, {"Authorization": "Bearer from-client"})
+
+    assert config.authorization == "Bearer service-account"
+
+
+def test_ignore_client_auth_keeps_configured_basic_auth() -> None:
+    settings = Settings(
+        base_url="https://hd", username="svc", password="pw", ignore_client_auth=True
+    ).finalize()
+
+    config = resolve_request_config(settings, {"Authorization": "Bearer from-client"})
+
+    assert config.authorization is None
+    assert (config.username, config.password) == ("svc", "pw")
+
+
+def test_ignore_client_auth_without_credentials_is_reported() -> None:
+    settings = Settings(base_url="https://hd", ignore_client_auth=True).finalize()
+
+    with pytest.raises(AuthenticationError):
+        resolve_request_config(settings, {"Authorization": "Bearer from-client"})
+
+
+def test_ignore_client_auth_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("INET_BASE_URL", "https://hd")
+    monkeypatch.setenv("INET_TOKEN", "t")
+    monkeypatch.setenv("INET_IGNORE_CLIENT_AUTH", "true")
+
+    assert Settings.from_env().ignore_client_auth is True
+
+
+def test_describe_mentions_ignored_client_headers() -> None:
+    settings = Settings(base_url="https://hd", token="t", ignore_client_auth=True).finalize()
+
+    assert "client Authorization headers ignored" in settings.describe()
+
+
+def test_credential_source_is_reported() -> None:
+    from_header = resolve_request_config(
+        Settings(base_url="https://hd", token="t").finalize(),
+        {"Authorization": "Bearer client"},
+    )
+    from_config = resolve_request_config(Settings(base_url="https://hd", token="t").finalize())
+    from_basic = resolve_request_config(
+        Settings(base_url="https://hd", username="svc", password="pw").finalize()
+    )
+
+    assert from_header.source == "Authorization header of this request"
+    assert from_config.source == "bearer token from the server configuration"
+    assert "svc" in from_basic.source
+    # The source string is for diagnostics and must never leak the secret.
+    assert "t" != from_config.source and "pw" not in from_basic.source
