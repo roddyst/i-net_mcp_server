@@ -10,6 +10,7 @@ from dataclasses import replace
 from . import __version__
 from .config import Settings, normalize_base_url
 from .errors import HelpdeskError
+from .policy import AUTOMAIL_VALUES, parse_action_ids
 from .server import build_server
 
 logger = logging.getLogger("inet_helpdesk_mcp")
@@ -80,6 +81,50 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--locale", help="Default locale for ticket searches (default 'en').")
     parser.add_argument(
+        "--no-normalize",
+        action="store_true",
+        help=(
+            "Return the Web-API answers unchanged instead of merging display values, "
+            "adding ISO timestamps and converting HTML step texts to text."
+        ),
+    )
+    parser.add_argument(
+        "--retries",
+        type=int,
+        help="Repetitions of a failed GET request (default 2). POST is never repeated.",
+    )
+    parser.add_argument(
+        "--pool-size",
+        type=int,
+        help="How many HelpDesk connections are kept alive at once (default 8).",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "Validate create_ticket and apply_ticket_action and report the request "
+            "that would be sent, without sending it."
+        ),
+    )
+    parser.add_argument(
+        "--allowed-actions",
+        metavar="IDS",
+        help="Comma separated ticket action ids that apply_ticket_action may use.",
+    )
+    parser.add_argument(
+        "--denied-actions",
+        metavar="IDS",
+        help="Comma separated ticket action ids that apply_ticket_action must not use.",
+    )
+    parser.add_argument(
+        "--default-automail",
+        choices=list(AUTOMAIL_VALUES),
+        help=(
+            "Value for the ticketextension.automail action argument when a call does "
+            "not set one, e.g. NEVER to keep an agent from mailing end users."
+        ),
+    )
+    parser.add_argument(
         "--log-level",
         default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
@@ -127,6 +172,20 @@ def settings_from_args(args: argparse.Namespace) -> Settings:
         updates["local_files_explicit"] = True
     if args.locale:
         updates["default_locale"] = args.locale
+    if args.no_normalize:
+        updates["normalize"] = False
+    if args.retries is not None:
+        updates["retries"] = args.retries
+    if args.pool_size is not None:
+        updates["pool_size"] = args.pool_size
+    if args.dry_run:
+        updates["dry_run"] = True
+    if args.allowed_actions:
+        updates["allowed_actions"] = parse_action_ids(args.allowed_actions)
+    if args.denied_actions:
+        updates["denied_actions"] = parse_action_ids(args.denied_actions)
+    if args.default_automail:
+        updates["default_automail"] = args.default_automail
 
     return replace(settings, **updates).finalize() if updates else settings
 

@@ -248,3 +248,65 @@ def test_credential_source_is_reported() -> None:
     assert "svc" in from_basic.source
     # The source string is for diagnostics and must never leak the secret.
     assert "t" != from_config.source and "pw" not in from_basic.source
+
+
+def test_env_settings_for_the_guard_rails(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("INET_BASE_URL", "https://hd.example.com:9000")
+    monkeypatch.setenv("INET_NORMALIZE", "false")
+    monkeypatch.setenv("INET_RETRIES", "5")
+    monkeypatch.setenv("INET_POOL_SIZE", "3")
+    monkeypatch.setenv("INET_DRY_RUN", "yes")
+    monkeypatch.setenv("INET_ALLOWED_ACTIONS", "-9, -12")
+    monkeypatch.setenv("INET_DENIED_ACTIONS", "-2")
+    monkeypatch.setenv("INET_DEFAULT_AUTOMAIL", "never")
+
+    settings = Settings.from_env()
+
+    assert settings.normalize is False
+    assert settings.retries == 5
+    assert settings.pool_size == 3
+    assert settings.dry_run is True
+    assert settings.allowed_actions == ("-9", "-12")
+    assert settings.denied_actions == ("-2",)
+    assert settings.default_automail == "NEVER"
+
+
+def test_guard_rail_defaults() -> None:
+    settings = Settings(base_url="https://hd.example.com:9000").finalize()
+
+    assert settings.normalize is True
+    assert settings.retries == 2
+    assert settings.pool_size == 8
+    assert settings.dry_run is False
+    assert settings.allowed_actions == ()
+
+
+def test_an_unknown_automail_default_is_rejected_at_startup() -> None:
+    with pytest.raises(ConfigurationError, match="NO_MAILS_TO_ENDUSER"):
+        Settings(base_url="https://hd.example.com:9000", default_automail="QUATSCH").finalize()
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"retries": -1}, "must not be negative"),
+        ({"pool_size": 0}, "at least one client"),
+    ],
+)
+def test_impossible_values_are_rejected(kwargs: dict, message: str) -> None:
+    with pytest.raises(ConfigurationError, match=message):
+        Settings(base_url="https://hd.example.com:9000", **kwargs).finalize()
+
+
+def test_settings_hand_out_the_action_policy() -> None:
+    settings = Settings(
+        base_url="https://hd.example.com:9000",
+        allowed_actions=("-9",),
+        default_automail="NEVER",
+    ).finalize()
+
+    policy = settings.policy()
+
+    assert policy.permits("-9")
+    assert not policy.permits("-12")
+    assert policy.apply_automail(None) == {"ticketextension.automail": "NEVER"}

@@ -14,6 +14,7 @@ from dataclasses import dataclass, field, replace
 from typing import Mapping
 
 from .errors import AuthenticationError, ConfigurationError
+from .policy import ActionPolicy, parse_action_ids, validate_automail
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +118,20 @@ class Settings:
     ignore_client_auth: bool = False
     read_only: bool = False
     default_locale: str = "en"
+    #: Reshape Web-API answers for the agent (display values, ISO timestamps,
+    #: HTML steps as text). Single tool calls can still ask for raw output.
+    normalize: bool = True
+    #: Repetitions of a failed GET; POST is never repeated.
+    retries: int = 2
+    #: Build the request and report it back instead of sending it.
+    dry_run: bool = False
+    #: Ticket action ids the agent may (not) apply; empty means no restriction.
+    allowed_actions: tuple[str, ...] = ()
+    denied_actions: tuple[str, ...] = ()
+    #: Value for the ticketextension.automail argument when the caller sets none.
+    default_automail: str | None = None
+    #: How many HelpDesk connections are kept alive at the same time.
+    pool_size: int = 8
     # Remember which of the two derived flags the operator set explicitly, so
     # finalize() can recompute the others deterministically after an override.
     url_header_explicit: bool = field(default=False, repr=False, compare=False)
@@ -130,6 +145,9 @@ class Settings:
         allow_local_files = _env_bool("ALLOW_LOCAL_FILES")
         timeout = _env_number("TIMEOUT", float)
         port = _env_number("PORT", int)
+        normalize = _env_bool("NORMALIZE")
+        retries = _env_number("RETRIES", int)
+        pool_size = _env_number("POOL_SIZE", int)
 
         return cls(
             base_url=normalize_base_url(base_url) if base_url else None,
@@ -148,6 +166,13 @@ class Settings:
             ignore_client_auth=bool(_env_bool("IGNORE_CLIENT_AUTH")),
             read_only=bool(_env_bool("READ_ONLY")),
             default_locale=_env("LOCALE") or "en",
+            normalize=True if normalize is None else normalize,
+            retries=retries if retries is not None else 2,
+            dry_run=bool(_env_bool("DRY_RUN")),
+            allowed_actions=parse_action_ids(_env("ALLOWED_ACTIONS")),
+            denied_actions=parse_action_ids(_env("DENIED_ACTIONS")),
+            default_automail=_env("DEFAULT_AUTOMAIL"),
+            pool_size=pool_size if pool_size is not None else 8,
             url_header_explicit=allow_url_header is not None,
             local_files_explicit=allow_local_files is not None,
         ).finalize()
@@ -171,6 +196,17 @@ class Settings:
                     "PEM file of the issuing CA, e.g. /etc/ssl/certs/ca-certificates.crt."
                 )
         updates: dict[str, object] = {}
+        automail = validate_automail(self.default_automail)
+        if automail != self.default_automail:
+            updates["default_automail"] = automail
+        if self.retries < 0:
+            raise ConfigurationError(
+                f"The number of retries must not be negative, got {self.retries}."
+            )
+        if self.pool_size < 1:
+            raise ConfigurationError(
+                f"The connection pool needs room for at least one client, got {self.pool_size}."
+            )
         if self.transport == "streamable-http":
             updates["transport"] = "http"
         transport = str(updates.get("transport", self.transport))
@@ -190,6 +226,14 @@ class Settings:
     @property
     def has_credentials(self) -> bool:
         return bool(self.token or (self.username and self.password))
+
+    def policy(self) -> ActionPolicy:
+        """The guard rails for the writing tools."""
+        return ActionPolicy(
+            allowed=self.allowed_actions,
+            denied=self.denied_actions,
+            default_automail=self.default_automail,
+        )
 
     def tls_verify(self) -> str | bool:
         """How the HelpDesk certificate is verified, as the client's ``verify``.
@@ -225,7 +269,8 @@ class Settings:
         return (
             f"transport={self.transport} "
             f"base_url={self.base_url or '<from X-Inet-Base-Url header>'} "
-            f"auth={auth} read_only={self.read_only} "
+            f"auth={auth} read_only={self.read_only} dry_run={self.dry_run} "
+            f"normalize={self.normalize} retries={self.retries} "
             f"tls={self.describe_tls()}"
         )
 
