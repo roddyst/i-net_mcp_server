@@ -139,8 +139,8 @@ def test_guard_rail_switches() -> None:
             "--retries", "0",
             "--pool-size", "2",
             "--dry-run",
-            "--allowed-actions", "-9,-12",
-            "--denied-actions", "-2",
+            "--allowed-actions=-9,-12",
+            "--denied-actions=-2",
             "--default-automail", "NEVER",
         ]
     )
@@ -152,6 +152,14 @@ def test_guard_rail_switches() -> None:
     assert settings.allowed_actions == ("-9", "-12")
     assert settings.denied_actions == ("-2",)
     assert settings.default_automail == "NEVER"
+
+
+def test_negative_action_ids_need_the_equals_form() -> None:
+    """Ticket action ids are negative, so argparse reads a separate '-9,-12' as an
+    option rather than a value - on Python 3.13 and older it refuses the call."""
+    settings = parse(["--base-url", "https://hd.example.com:9000", "--denied-actions=-2,-33"])
+
+    assert settings.denied_actions == ("-2", "-33")
 
 
 def test_retries_zero_on_the_command_line_beats_the_environment(

@@ -109,12 +109,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--allowed-actions",
         metavar="IDS",
-        help="Comma separated ticket action ids that apply_ticket_action may use.",
+        help=(
+            "Comma separated ticket action ids that apply_ticket_action may use. "
+            "Ticket action ids are negative, so write them with an equals sign: "
+            "--allowed-actions=-9,-12"
+        ),
     )
     parser.add_argument(
         "--denied-actions",
         metavar="IDS",
-        help="Comma separated ticket action ids that apply_ticket_action must not use.",
+        help=(
+            "Comma separated ticket action ids that apply_ticket_action must not use, "
+            "e.g. --denied-actions=-2,-33"
+        ),
     )
     parser.add_argument(
         "--default-automail",

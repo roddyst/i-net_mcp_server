@@ -181,13 +181,15 @@ Server mit `--no-normalize`.
 
 ```bash
 # Der Agent darf antworten (-9), aber nicht reaktivieren (-2), und nie Mails auslösen
-inet-helpdesk-mcp --allowed-actions -9 --default-automail NEVER
+inet-helpdesk-mcp --allowed-actions=-9 --default-automail NEVER
 
 # Alles prüfen, nichts senden: liefert die Anfrage zurück, die gestellt worden wäre
 inet-helpdesk-mcp --dry-run
 ```
 
-* `--allowed-actions` / `--denied-actions` werden **vor** dem Aufruf geprüft; gesperrte
+* `--allowed-actions` / `--denied-actions` brauchen das Gleichheitszeichen
+  (`--allowed-actions=-9,-12`), weil Aktions-Ids negativ sind und getrennt
+  geschrieben als Option gelesen würden. Sie werden **vor** dem Aufruf geprüft; gesperrte
   Aktionen erscheinen auch in `list_ticket_actions` nicht mehr (vermerkt als
   `hiddenByPolicy`).
 * `--default-automail` ergänzt `ticketextension.automail`, wenn der Aufruf selbst keinen
