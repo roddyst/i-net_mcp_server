@@ -129,3 +129,50 @@ def test_client_auth_is_forwarded_by_default() -> None:
     settings = parse(["--transport", "http", "--base-url", "https://hd"])
 
     assert settings.ignore_client_auth is False
+
+
+def test_guard_rail_switches() -> None:
+    settings = parse(
+        [
+            "--base-url", "https://hd.example.com:9000",
+            "--no-normalize",
+            "--retries", "0",
+            "--pool-size", "2",
+            "--dry-run",
+            "--allowed-actions=-9,-12",
+            "--denied-actions=-2",
+            "--default-automail", "NEVER",
+        ]
+    )
+
+    assert settings.normalize is False
+    assert settings.retries == 0
+    assert settings.pool_size == 2
+    assert settings.dry_run is True
+    assert settings.allowed_actions == ("-9", "-12")
+    assert settings.denied_actions == ("-2",)
+    assert settings.default_automail == "NEVER"
+
+
+def test_negative_action_ids_need_the_equals_form() -> None:
+    """Ticket action ids are negative, so argparse reads a separate '-9,-12' as an
+    option rather than a value - on Python 3.13 and older it refuses the call."""
+    settings = parse(["--base-url", "https://hd.example.com:9000", "--denied-actions=-2,-33"])
+
+    assert settings.denied_actions == ("-2", "-33")
+
+
+def test_retries_zero_on_the_command_line_beats_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """0 is a real value, not 'unset' - it has to survive the merge."""
+    monkeypatch.setenv("INET_RETRIES", "5")
+
+    settings = parse(["--base-url", "https://hd.example.com:9000", "--retries", "0"])
+
+    assert settings.retries == 0
+
+
+def test_an_unknown_automail_value_is_refused_by_the_parser() -> None:
+    with pytest.raises(SystemExit):
+        parse(["--base-url", "https://hd.example.com:9000", "--default-automail", "QUATSCH"])

@@ -8,7 +8,7 @@ import ssl
 import httpx
 import pytest
 
-from inet_helpdesk_mcp.client import HelpdeskClient, build_ssl_verify
+from inet_helpdesk_mcp.client import ClientPool, HelpdeskClient, build_ssl_verify
 from inet_helpdesk_mcp.config import RequestConfig
 from inet_helpdesk_mcp.errors import ApiError, TransportError
 
@@ -205,3 +205,119 @@ async def test_ca_bundle_is_handed_to_httpx(
     context = recorded["verify"]
     assert isinstance(context, ssl.SSLContext)
     assert len(context.get_ca_certs()) == 1
+
+
+def _sequence(helpdesk: RecordingHelpDesk, method: str, path: str, *responses) -> None:
+    """Answer the same route with a different response on every call."""
+    remaining = list(responses)
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        status, payload = remaining.pop(0) if len(remaining) > 1 else remaining[0]
+        return httpx.Response(status, json=payload)
+
+    helpdesk.routes[(method, path)] = handler
+
+
+def _client(helpdesk: RecordingHelpDesk, retries: int) -> HelpdeskClient:
+    config = RequestConfig(base_url=BASE_URL, authorization="Bearer test-token")
+    http_client = httpx.AsyncClient(
+        base_url=BASE_URL,
+        transport=httpx.MockTransport(helpdesk.handler),
+        headers=config.auth_headers(),
+    )
+    return HelpdeskClient(config, retries=retries, client=http_client)
+
+
+@pytest.fixture(autouse=True)
+def no_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("inet_helpdesk_mcp.client.RETRY_BACKOFF_SECONDS", 0.0)
+
+
+async def test_get_is_retried_after_a_503(helpdesk: RecordingHelpDesk) -> None:
+    _sequence(helpdesk, "GET", "/api/ticket/1", (503, None), (200, {"ticketId": 1}))
+
+    async with _client(helpdesk, retries=2) as client:
+        result = await client.get_ticket("1")
+
+    assert result == {"ticketId": 1}
+    assert len(helpdesk.requests) == 2
+
+
+async def test_retries_give_up_and_report_the_status(helpdesk: RecordingHelpDesk) -> None:
+    _sequence(helpdesk, "GET", "/api/ticket/1", (503, None))
+
+    async with _client(helpdesk, retries=2) as client:
+        with pytest.raises(ApiError) as excinfo:
+            await client.get_ticket("1")
+
+    assert "503" in str(excinfo.value)
+    assert len(helpdesk.requests) == 3  # the original attempt plus two retries
+
+
+async def test_a_client_error_is_not_retried(helpdesk: RecordingHelpDesk) -> None:
+    _sequence(helpdesk, "GET", "/api/ticket/1", (404, None))
+
+    async with _client(helpdesk, retries=2) as client:
+        with pytest.raises(ApiError):
+            await client.get_ticket("1")
+
+    assert len(helpdesk.requests) == 1
+
+
+async def test_post_is_never_retried(helpdesk: RecordingHelpDesk) -> None:
+    """A repeated create would open a second ticket - worse than the error."""
+    _sequence(helpdesk, "POST", "/api/ticket/create", (503, None))
+
+    async with _client(helpdesk, retries=2) as client:
+        with pytest.raises(ApiError):
+            await client.create_ticket({"text": "hi"})
+
+    assert len(helpdesk.requests) == 1
+
+
+class _FakeClient:
+    def __init__(self, config: RequestConfig, **kwargs: object) -> None:
+        self.config = config
+        self.kwargs = kwargs
+        self.closed = False
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+async def test_pool_reuses_one_client_per_configuration() -> None:
+    pool = ClientPool(factory=_FakeClient)
+    config = RequestConfig(base_url=BASE_URL, authorization="Bearer a")
+
+    first = await pool.acquire(config)
+    second = await pool.acquire(config)
+
+    assert first is second
+    assert first.kwargs == {"timeout": 30.0, "verify": True, "retries": 0}
+
+
+async def test_pool_separates_users() -> None:
+    pool = ClientPool(factory=_FakeClient)
+
+    first = await pool.acquire(RequestConfig(base_url=BASE_URL, authorization="Bearer a"))
+    second = await pool.acquire(RequestConfig(base_url=BASE_URL, authorization="Bearer b"))
+
+    assert first is not second
+
+
+async def test_pool_closes_what_it_evicts() -> None:
+    pool = ClientPool(factory=_FakeClient, max_size=1)
+
+    first = await pool.acquire(RequestConfig(base_url=BASE_URL, authorization="Bearer a"))
+    await pool.acquire(RequestConfig(base_url=BASE_URL, authorization="Bearer b"))
+
+    assert first.closed is True
+
+
+async def test_pool_closes_everything_on_shutdown() -> None:
+    pool = ClientPool(factory=_FakeClient)
+    client = await pool.acquire(RequestConfig(base_url=BASE_URL, authorization="Bearer a"))
+
+    await pool.aclose()
+
+    assert client.closed is True

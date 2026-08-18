@@ -134,10 +134,11 @@ Fertige systemd-Unit, Env-File und Schritt-für-Schritt-Anleitung dafür:
 | Tool | Web-API | Beschreibung |
 | --- | --- | --- |
 | `server_info` | – | Zeigt die Konfiguration und prüft Verbindung + Zugangsdaten. Erste Anlaufstelle bei Fehlern. |
-| `search_tickets` | `POST /api/ticket/search` | Tickets über eine Suchphrase finden (`query`, `limit`, `start`, `locale`). |
+| `search_tickets` | `POST /api/ticket/search` | Tickets über eine Suchphrase finden (`query`, `limit`, `start`, `locale`); mit `include_details` gleich samt Betreff und Status. |
 | `get_ticket` | `GET /api/ticket/<id>` | Felder und Attribute eines Tickets; `fields` grenzt die Antwort ein. |
+| `get_ticket_conversation` | mehrere | Ticket **und** Bearbeitungsschritte inklusive Texte in einem Aufruf — der schnellste Weg, ein Ticket zu verstehen. |
 | `list_ticket_actions` | `GET /api/ticket/<id>/actions` | Aktuell erlaubte Ticketaktionen als Map „Id → Anzeigename". |
-| `list_ticket_steps` | `GET /api/ticket/<id>/steps` | Bearbeitungsschritte eines Tickets, optional ab Zeitstempel `since`. |
+| `list_ticket_steps` | `GET /api/ticket/<id>/steps` | Bearbeitungsschritte eines Tickets ohne Texte, optional ab Zeitstempel `since`. |
 | `get_ticket_step` | `GET /api/ticket/<id>/steps/<step-id>` | Ein Bearbeitungsschritt inklusive Text. |
 | `create_ticket` | `POST /api/ticket/create` | Neues Ticket anlegen, liefert die Ticket-Id. |
 | `apply_ticket_action` | `POST /api/ticket/<id>/apply` | Ticketaktion ausführen, liefert die Id des neuen Bearbeitungsschritts. |
@@ -151,10 +152,51 @@ die in den Betreffzeilen der HelpDesk-E-Mails steht.
 ### Typischer Ablauf
 
 1. `search_tickets` mit einer Phrase wie `Drucker` oder `Resource:"First Level Support"`
-2. `get_ticket` / `list_ticket_steps` / `get_ticket_step` zum Lesen
+2. `get_ticket_conversation` zum Lesen — Ticket und Verlauf in einem Aufruf;
+   `get_ticket`, `list_ticket_steps` und `get_ticket_step` sind die feinkörnigen Varianten
 3. `list_ticket_actions`, um die gültige `action_id` zu ermitteln
 4. `apply_ticket_action` mit dieser Id — die Ids unterscheiden sich je Ticket,
    Benutzer und Ticketstatus, sie dürfen also nicht geraten werden.
+
+### Aufbereitete Antworten
+
+Die Web-API antwortet so, wie ihre eigene Oberfläche es braucht: Kennzahlen statt
+Beschriftungen, Zeitstempel in Millisekunden, Schritttexte als rohes HTML. Für ein
+Sprachmodell kostet das Tokens und Genauigkeit, deshalb werden die Antworten
+aufbereitet:
+
+* `statusid: 400` plus `statusid_display: "Geschlossen"` wird zu
+  `statusid: { "value": 400, "display": "Geschlossen" }`
+* neben einem Zeitstempel steht sein ISO-Zwilling, z. B.
+  `closeddate_iso: "2020-09-28T12:05:09Z"` — der Originalwert bleibt erhalten
+* Schritttexte mit `htmlContent: true` kommen als lesbarer Text an (`textWasHtml: true`);
+  `max_text_chars` kürzt sehr lange Texte mit einem sichtbaren Hinweis
+
+Wer die Rohantwort braucht, setzt am einzelnen Aufruf `raw: true` oder startet den
+Server mit `--no-normalize`.
+
+### Leitplanken für schreibende Tools
+
+`--read-only` ist ganz oder gar nicht. Dazwischen liegen drei Schalter:
+
+```bash
+# Der Agent darf antworten (-9), aber nicht reaktivieren (-2), und nie Mails auslösen
+inet-helpdesk-mcp --allowed-actions=-9 --default-automail NEVER
+
+# Alles prüfen, nichts senden: liefert die Anfrage zurück, die gestellt worden wäre
+inet-helpdesk-mcp --dry-run
+```
+
+* `--allowed-actions` / `--denied-actions` brauchen das Gleichheitszeichen
+  (`--allowed-actions=-9,-12`), weil Aktions-Ids negativ sind und getrennt
+  geschrieben als Option gelesen würden. Sie werden **vor** dem Aufruf geprüft; gesperrte
+  Aktionen erscheinen auch in `list_ticket_actions` nicht mehr (vermerkt als
+  `hiddenByPolicy`).
+* `--default-automail` ergänzt `ticketextension.automail`, wenn der Aufruf selbst keinen
+  Wert setzt. Ein Tippfehler beendet den Serverstart, statt beim HelpDesk stillschweigend
+  verworfen zu werden — und damit die Mails auszulösen, die er verhindern sollte.
+* `--dry-run` validiert Aktionspolitik, Anhänge und Payload und antwortet mit
+  `{"dryRun": true, "method", "path", "payload", "attachments"}`.
 
 ### Ticketfelder und Aktionsargumente
 
@@ -222,6 +264,13 @@ Kommandozeile gewinnt.
 | `INET_IGNORE_CLIENT_AUTH` | `--ignore-client-auth` | `false` | `Authorization`-Header der Clients ignorieren und immer die konfigurierten Zugangsdaten verwenden |
 | `INET_ALLOW_LOCAL_FILES` | `--no-local-files` | `true` bei stdio, sonst `false` | Anhänge per Dateipfad erlauben |
 | `INET_LOCALE` | `--locale` | `en` | Standardsprache der Suchphrase |
+| `INET_NORMALIZE` | `--no-normalize` | `true` | Antworten aufbereiten (Anzeigewerte, ISO-Zeitstempel, HTML zu Text) |
+| `INET_RETRIES` | `--retries` | `2` | Wiederholungen eines fehlgeschlagenen `GET`; `POST` wird nie wiederholt |
+| `INET_POOL_SIZE` | `--pool-size` | `8` | Gleichzeitig offen gehaltene HelpDesk-Verbindungen |
+| `INET_DRY_RUN` | `--dry-run` | `false` | Schreibende Aufrufe prüfen und zurückmelden, aber nicht senden |
+| `INET_ALLOWED_ACTIONS` | `--allowed-actions` | – | Erlaubte Ticketaktions-Ids, kommasepariert |
+| `INET_DENIED_ACTIONS` | `--denied-actions` | – | Gesperrte Ticketaktions-Ids, kommasepariert |
+| `INET_DEFAULT_AUTOMAIL` | `--default-automail` | – | Standardwert für `ticketextension.automail` (`NEVER`, `NO_MAILS_TO_ENDUSER`, `SERVERSETTING`, `ALWAYS`) |
 
 ### HelpDesk hinter einer internen CA
 
@@ -293,8 +342,12 @@ das Feld `tls` von `server_info`.
 * Der Server macht genau das, was der angemeldete Benutzer darf — die
   Rechteprüfung bleibt beim HelpDesk.
 * `apply_ticket_action` und `create_ticket` verändern Daten und können je nach
-  Konfiguration E-Mails an Endanwender auslösen. Für Tests empfiehlt sich das
-  Aktionsargument `"ticketextension.automail": "NEVER"` oder ein Testsystem.
+  Konfiguration E-Mails an Endanwender auslösen. Serverseitig verhindert das
+  `--default-automail NEVER`, im einzelnen Aufruf das Aktionsargument
+  `"ticketextension.automail": "NEVER"`. Zum Einfahren eines Agenten gegen ein
+  Produktivsystem gibt es `--dry-run`.
+* Jeder schreibende Aufruf wird mit Ticket-Id und Aktions-Id auf INFO protokolliert —
+  ohne Token und ohne Passwort.
 * `get_ticket` liefert standardmäßig alle Felder eines Tickets, inklusive
   personenbezogener Daten — mit `fields` gezielt einschränken.
 
@@ -308,8 +361,12 @@ act on tickets, with attachment support. Run it over **stdio** (credentials from
 authenticates by sending its own `Authorization: Bearer <token>` header — and,
 when no base URL is configured, selects the HelpDesk instance with an
 `X-Inet-Base-Url` header. Tools: `server_info`, `search_tickets`, `get_ticket`,
-`list_ticket_actions`, `list_ticket_steps`, `get_ticket_step`, `create_ticket`,
-`apply_ticket_action`. Start with `--read-only` to expose the reading tools only.
+`get_ticket_conversation`, `list_ticket_actions`, `list_ticket_steps`,
+`get_ticket_step`, `create_ticket`, `apply_ticket_action`. Answers are reshaped for
+the agent (display values merged, ISO timestamps added, HTML step texts converted;
+`raw: true` or `--no-normalize` opts out). Guard rails for the writing side:
+`--read-only`, `--dry-run`, `--allowed-actions` / `--denied-actions` and
+`--default-automail`.
 
 ## Lizenz
 
