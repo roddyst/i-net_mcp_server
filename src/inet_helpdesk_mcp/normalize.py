@@ -112,51 +112,57 @@ def normalize_record(record: Any) -> Any:
 
 
 class _TextExtractor(HTMLParser):
-    """Collects the readable text of an HTML fragment."""
+    """Collects the readable text of an HTML fragment.
+
+    Every attribute is prefixed with ``_text_``: HTMLParser keeps its own state
+    on the instance, and which names that are differs between Python versions -
+    3.13 has a ``_pending`` of its own, which a plainer name would silently
+    overwrite until ``close()`` fails.
+    """
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
-        self.parts: list[str] = []
-        self._skip_depth = 0
+        self._text_parts: list[str] = []
+        self._text_skip = 0
         #: Line breaks owed to the text that follows. Collected instead of
         #: written so that </p><ul> does not pile up three empty lines.
-        self._pending = 0
+        self._text_breaks = 0
 
-    def _break(self, tag: str) -> None:
-        if self.parts:  # never start the text with empty lines
-            self._pending = max(self._pending, _BLOCK_BREAKS[tag])
+    def _text_break(self, tag: str) -> None:
+        if self._text_parts:  # never start the text with empty lines
+            self._text_breaks = max(self._text_breaks, _BLOCK_BREAKS[tag])
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag in _SKIPPED_TAGS:
-            self._skip_depth += 1
+            self._text_skip += 1
         elif tag in _BLOCK_BREAKS:
-            self._break(tag)
+            self._text_break(tag)
             if tag == "li":
-                self._flush()
-                self.parts.append("- ")
+                self._text_flush()
+                self._text_parts.append("- ")
 
     def handle_endtag(self, tag: str) -> None:
         if tag in _SKIPPED_TAGS:
-            self._skip_depth = max(0, self._skip_depth - 1)
+            self._text_skip = max(0, self._text_skip - 1)
         elif tag in _BLOCK_BREAKS:
-            self._break(tag)
+            self._text_break(tag)
 
-    def _flush(self) -> None:
-        if self._pending:
-            self.parts.append("\n" * self._pending)
-            self._pending = 0
+    def _text_flush(self) -> None:
+        if self._text_breaks:
+            self._text_parts.append("\n" * self._text_breaks)
+            self._text_breaks = 0
 
     def handle_data(self, data: str) -> None:
-        if self._skip_depth:
+        if self._text_skip:
             return
         if not data.strip():
             # Whitespace between inline elements still separates two words;
             # whitespace around a block element is swallowed by its break.
-            if self.parts and not self._pending:
-                self.parts.append(" ")
+            if self._text_parts and not self._text_breaks:
+                self._text_parts.append(" ")
             return
-        self._flush()
-        self.parts.append(data)
+        self._text_flush()
+        self._text_parts.append(data)
 
 
 def html_to_text(html: str) -> str:
@@ -170,7 +176,7 @@ def html_to_text(html: str) -> str:
     extractor = _TextExtractor()
     extractor.feed(html)
     extractor.close()
-    text = "".join(extractor.parts)
+    text = "".join(extractor._text_parts)
     text = re.sub(r"[ \t\r\f\v\xa0]+", " ", text)
     text = re.sub(r" *\n *", "\n", text)
     text = re.sub(r"\n{3,}", "\n\n", text)

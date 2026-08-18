@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from html.parser import HTMLParser
+
 from inet_helpdesk_mcp.normalize import (
     html_to_text,
     normalize_mapping,
@@ -84,6 +86,18 @@ def test_html_becomes_readable_text() -> None:
 
 def test_inline_elements_keep_their_word_boundaries() -> None:
     assert html_to_text("<span>zwei</span> <b>Wörter</b>") == "zwei Wörter"
+
+
+def test_the_extractor_never_shadows_the_parsers_own_state() -> None:
+    """HTMLParser keeps state on the instance and the names differ per Python
+    version: 3.13 has a `_pending` of its own, and overwriting it broke close()."""
+    from inet_helpdesk_mcp.normalize import _TextExtractor
+
+    reserved = set(vars(HTMLParser())) | set(dir(HTMLParser))
+    ours = {name for name in vars(_TextExtractor()) if name.startswith("_text_")}
+
+    assert ours, "the extractor is expected to keep its state under _text_*"
+    assert not ours & reserved
 
 
 def test_html_to_text_handles_empty_input() -> None:
