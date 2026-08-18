@@ -7,9 +7,16 @@ import httpx
 import pytest
 
 from inet_helpdesk_mcp.client import HelpdeskClient
-from inet_helpdesk_mcp.config import RequestConfig, Settings
+from inet_helpdesk_mcp.config import CA_BUNDLE_ENV_VARS, RequestConfig, Settings
 
 BASE_URL = "https://helpdesk.example.com:9000"
+
+
+@pytest.fixture(autouse=True)
+def clean_tls_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The machine running the tests may point at its own CA bundle."""
+    for name in CA_BUNDLE_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
 
 
 class RecordingHelpDesk:

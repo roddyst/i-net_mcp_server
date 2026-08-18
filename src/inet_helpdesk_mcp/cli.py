@@ -46,6 +46,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Do not verify the HelpDesk TLS certificate (self-signed test systems only).",
     )
     parser.add_argument(
+        "--ca-bundle",
+        metavar="PATH",
+        help=(
+            "PEM file with the CA certificates to trust, for a HelpDesk behind an "
+            "internal company CA, e.g. /etc/ssl/certs/ca-certificates.crt. Without it "
+            "SSL_CERT_FILE and REQUESTS_CA_BUNDLE are honoured, then the bundled "
+            "certifi store. Cannot be combined with --no-verify-tls."
+        ),
+    )
+    parser.add_argument(
         "--read-only",
         action="store_true",
         help="Only expose reading tools; create_ticket and apply_ticket_action are hidden.",
@@ -103,6 +113,8 @@ def settings_from_args(args: argparse.Namespace) -> Settings:
         updates["timeout"] = args.timeout
     if args.no_verify_tls:
         updates["verify_tls"] = False
+    if args.ca_bundle:
+        updates["ca_bundle"] = args.ca_bundle
     if args.read_only:
         updates["read_only"] = True
     if args.allow_url_header:

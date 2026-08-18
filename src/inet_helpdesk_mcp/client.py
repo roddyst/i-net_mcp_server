@@ -6,6 +6,8 @@ Documentation: https://docs.inetsoftware.de/helpdesk/help/webapi.ticket/p/ticket
 from __future__ import annotations
 
 import json as jsonlib
+import os
+import ssl
 from typing import Any, Mapping, Sequence
 
 import httpx
@@ -20,6 +22,20 @@ USER_AGENT = "inet-helpdesk-mcp"
 AttachmentUpload = tuple[dict[str, Any], bytes]
 
 
+def build_ssl_verify(verify: str | bool) -> ssl.SSLContext | bool:
+    """Turn a CA bundle path into the SSL context httpx expects.
+
+    ``verify=<path>`` is deprecated in httpx, so the context is built here: the
+    file (or directory) named by ``verify`` becomes the only trusted CA store.
+    Booleans are passed through unchanged.
+    """
+    if not isinstance(verify, str):
+        return verify
+    if os.path.isdir(verify):
+        return ssl.create_default_context(capath=verify)
+    return ssl.create_default_context(cafile=verify)
+
+
 class HelpdeskClient:
     """Talks to one i-net HelpDesk instance on behalf of one user."""
 
@@ -28,14 +44,14 @@ class HelpdeskClient:
         config: RequestConfig,
         *,
         timeout: float = 30.0,
-        verify: bool = True,
+        verify: str | bool = True,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self._config = config
         self._client = client or httpx.AsyncClient(
             base_url=config.base_url,
             timeout=timeout,
-            verify=verify,
+            verify=build_ssl_verify(verify),
             follow_redirects=True,
             auth=(
                 (config.username, config.password)

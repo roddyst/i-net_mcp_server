@@ -216,11 +216,56 @@ Kommandozeile gewinnt.
 | `INET_HTTP_PATH` | `--http-path` | `/mcp` | Pfad des Streamable-HTTP-Endpunkts |
 | `INET_TIMEOUT` | `--timeout` | `30` | HTTP-Timeout in Sekunden |
 | `INET_VERIFY_TLS` | `--no-verify-tls` | `true` | TLS-Zertifikat des HelpDesk prüfen |
+| `INET_CA_BUNDLE` | `--ca-bundle` | – | PEM-Datei mit den CA-Zertifikaten, denen vertraut wird (interne Firmen-CA) |
 | `INET_READ_ONLY` | `--read-only` | `false` | Schreibende Tools ausblenden |
 | `INET_ALLOW_URL_HEADER` | `--allow-url-header` | nur ohne `INET_BASE_URL` | `X-Inet-Base-Url`-Header erlauben |
 | `INET_IGNORE_CLIENT_AUTH` | `--ignore-client-auth` | `false` | `Authorization`-Header der Clients ignorieren und immer die konfigurierten Zugangsdaten verwenden |
 | `INET_ALLOW_LOCAL_FILES` | `--no-local-files` | `true` bei stdio, sonst `false` | Anhänge per Dateipfad erlauben |
 | `INET_LOCALE` | `--locale` | `en` | Standardsprache der Suchphrase |
+
+### HelpDesk hinter einer internen CA
+
+Läuft der HelpDesk mit einem Zertifikat der eigenen Unternehmens-CA (etwa den
+Active-Directory-Zertifikatsdiensten), kennt der Server dessen Aussteller
+zunächst nicht: geprüft wird gegen das mitgelieferte
+[certifi](https://pypi.org/project/certifi/)-Bundle mit den öffentlichen CAs,
+**nicht** gegen den System-Truststore. Der Aufruf scheitert dann mit einem
+`CERTIFICATE_VERIFY_FAILED` im Verbindungsfehler.
+
+Der direkte Weg ist `--ca-bundle` mit der PEM-Datei der ausstellenden CA:
+
+```bash
+inet-helpdesk-mcp --base-url https://helpdesk.intern.example.com:9000 \
+                  --ca-bundle /usr/local/share/ca-certificates/firmen-ca.crt
+```
+
+Genauso als Umgebungsvariable, z. B. im Env-File der systemd-Unit:
+
+```bash
+INET_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+```
+
+Ohne die Option werden zusätzlich die Standardvariablen `SSL_CERT_FILE` und
+`REQUESTS_CA_BUNDLE` berücksichtigt (in dieser Reihenfolge); erst wenn auch die
+fehlen, bleibt es beim certifi-Bundle. Ein gesetztes `--ca-bundle` gewinnt
+immer, und die angegebene Datei ist dann der **einzige** vertraute Truststore —
+öffentliche CAs werden nicht zusätzlich akzeptiert. Zeigt der Pfad ins Leere,
+bricht der Server sofort beim Start mit einer Konfigurationsmeldung ab.
+
+**Alternative:** die CA einmal im System hinterlegen, dann genügt der Verweis
+auf den System-Truststore (oder es reicht `SSL_CERT_FILE`):
+
+```bash
+sudo cp firmen-ca.crt /usr/local/share/ca-certificates/
+sudo update-ca-certificates            # Debian/Ubuntu
+# RHEL/Fedora: /etc/pki/ca-trust/source/anchors/ + update-ca-trust
+inet-helpdesk-mcp --ca-bundle /etc/ssl/certs/ca-certificates.crt …
+```
+
+`--ca-bundle` und `--no-verify-tls` schließen einander aus — der Server beendet
+sich mit einem Konfigurationsfehler, statt stillschweigend die Prüfung
+abzuschalten. Welcher Truststore am Ende verwendet wird, zeigen der Startlog und
+das Feld `tls` von `server_info`.
 
 ---
 
@@ -234,6 +279,9 @@ Kommandozeile gewinnt.
   Dispatcher-Rolle.
 * **Verbindungsfehler**: Basis-URL inklusive Port prüfen (Standard des HelpDesk
   ist `9000`). Bei selbstsignierten Testsystemen hilft `--no-verify-tls`.
+* **`CERTIFICATE_VERIFY_FAILED` / „unable to get local issuer certificate"**:
+  Das HelpDesk-Zertifikat stammt aus einer internen CA — siehe
+  [HelpDesk hinter einer internen CA](#helpdesk-hinter-einer-internen-ca).
 * Mehr Details liefert `--log-level DEBUG` (Logs gehen auf stderr).
 
 ---
