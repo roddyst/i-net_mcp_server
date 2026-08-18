@@ -8,16 +8,23 @@ single server process can serve several users.
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass, field, replace
 from typing import Mapping
 
 from .errors import AuthenticationError, ConfigurationError
 
+logger = logging.getLogger(__name__)
+
 ENV_PREFIX = "INET_"
 
 _TRUE = {"1", "true", "yes", "on"}
 _FALSE = {"0", "false", "no", "off"}
+
+#: Standard CA bundle variables of OpenSSL and requests, honoured when no
+#: INET_CA_BUNDLE is configured. httpx itself only looks at SSL_CERT_FILE.
+CA_BUNDLE_ENV_VARS = ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE")
 
 
 def _env(name: str) -> str | None:
@@ -55,6 +62,23 @@ def _env_number(name: str, cast):
         ) from exc
 
 
+def ca_bundle_from_env() -> str | None:
+    """The first usable CA bundle from the standard environment variables.
+
+    A variable that points nowhere is skipped instead of failing the request
+    later: these are ambient settings of the machine, not of this server.
+    """
+    for name in CA_BUNDLE_ENV_VARS:
+        value = (os.environ.get(name) or "").strip()
+        if not value:
+            continue
+        if not os.path.isfile(value):
+            logger.warning("Ignoring %s=%r: not a readable file.", name, value)
+            continue
+        return value
+    return None
+
+
 def normalize_base_url(base_url: str) -> str:
     """Return *base_url* without a trailing slash and with an explicit scheme."""
     url = base_url.strip().rstrip("/")
@@ -86,6 +110,8 @@ class Settings:
     http_path: str = "/mcp"
     timeout: float = 30.0
     verify_tls: bool = True
+    #: CA bundle used instead of the certifi default, e.g. an internal company CA.
+    ca_bundle: str | None = None
     allow_local_files: bool = True
     allow_url_header: bool = False
     ignore_client_auth: bool = False
@@ -116,6 +142,7 @@ class Settings:
             http_path=_env("HTTP_PATH") or "/mcp",
             timeout=timeout if timeout is not None else 30.0,
             verify_tls=True if verify_tls is None else verify_tls,
+            ca_bundle=_env("CA_BUNDLE"),
             allow_local_files=True if allow_local_files is None else allow_local_files,
             allow_url_header=bool(allow_url_header),
             ignore_client_auth=bool(_env_bool("IGNORE_CLIENT_AUTH")),
@@ -131,6 +158,18 @@ class Settings:
             raise ConfigurationError(
                 f"Unknown transport {self.transport!r}; use 'stdio', 'http' or 'sse'."
             )
+        if self.ca_bundle:
+            if not self.verify_tls:
+                raise ConfigurationError(
+                    "--ca-bundle (INET_CA_BUNDLE) and --no-verify-tls "
+                    "(INET_VERIFY_TLS=false) contradict each other: either check the "
+                    "HelpDesk certificate against that CA bundle or do not check it at all."
+                )
+            if not os.path.isfile(self.ca_bundle):
+                raise ConfigurationError(
+                    f"The CA bundle {self.ca_bundle!r} is not a readable file. Pass the "
+                    "PEM file of the issuing CA, e.g. /etc/ssl/certs/ca-certificates.crt."
+                )
         updates: dict[str, object] = {}
         if self.transport == "streamable-http":
             updates["transport"] = "http"
@@ -152,6 +191,27 @@ class Settings:
     def has_credentials(self) -> bool:
         return bool(self.token or (self.username and self.password))
 
+    def tls_verify(self) -> str | bool:
+        """How the HelpDesk certificate is verified, as the client's ``verify``.
+
+        ``False`` switches verification off, a string is the CA bundle to trust
+        and ``True`` keeps the client's own default bundle (certifi).  A
+        configured CA bundle wins over the SSL_CERT_FILE / REQUESTS_CA_BUNDLE
+        variables, which in turn win over certifi.
+        """
+        if not self.verify_tls:
+            return False
+        return self.ca_bundle or ca_bundle_from_env() or True
+
+    def describe_tls(self) -> str:
+        """A short, human readable form of :meth:`tls_verify` for diagnostics."""
+        verify = self.tls_verify()
+        if verify is False:
+            return "certificate check disabled"
+        if verify is True:
+            return "default CA bundle (certifi)"
+        return f"CA bundle {verify}"
+
     def describe(self) -> str:
         """A short, secret-free summary used for logging and the ``server_info`` tool."""
         if self.token:
@@ -165,7 +225,8 @@ class Settings:
         return (
             f"transport={self.transport} "
             f"base_url={self.base_url or '<from X-Inet-Base-Url header>'} "
-            f"auth={auth} read_only={self.read_only}"
+            f"auth={auth} read_only={self.read_only} "
+            f"tls={self.describe_tls()}"
         )
 
 

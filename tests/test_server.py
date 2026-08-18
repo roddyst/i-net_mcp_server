@@ -180,6 +180,55 @@ async def test_server_info_reports_ok(patched_client: RecordingHelpDesk) -> None
     assert payload["read_only"] is False
 
 
+async def test_server_info_reports_the_ca_bundle(
+    patched_client: RecordingHelpDesk, tmp_path
+) -> None:
+    patched_client.route("POST", "/api/ticket/search", {"ticketList": [], "hasMore": False})
+    bundle = tmp_path / "company-ca.pem"
+    bundle.write_text("-----BEGIN CERTIFICATE-----\n")
+
+    payload = await call(build(ca_bundle=str(bundle)), "server_info")
+
+    assert payload["tls"] == f"CA bundle {bundle}"
+
+
+async def test_tools_use_the_configured_ca_bundle(
+    monkeypatch: pytest.MonkeyPatch, helpdesk: RecordingHelpDesk, tmp_path
+) -> None:
+    """The CA bundle has to reach the HTTP client, not just the settings."""
+    bundle = tmp_path / "company-ca.pem"
+    bundle.write_text("-----BEGIN CERTIFICATE-----\n")
+    verify: list[object] = []
+
+    def factory(config, **kwargs):
+        verify.append(kwargs.get("verify"))
+        return helpdesk.client(config)
+
+    monkeypatch.setattr("inet_helpdesk_mcp.server.HelpdeskClient", factory)
+    helpdesk.route("GET", "/api/ticket/1", {"ticketId": 1})
+
+    await call(build(ca_bundle=str(bundle)), "get_ticket", {"ticket_id": "1"})
+
+    assert verify == [str(bundle)]
+
+
+async def test_tools_keep_the_default_store_without_a_ca_bundle(
+    monkeypatch: pytest.MonkeyPatch, helpdesk: RecordingHelpDesk
+) -> None:
+    verify: list[object] = []
+
+    def factory(config, **kwargs):
+        verify.append(kwargs.get("verify"))
+        return helpdesk.client(config)
+
+    monkeypatch.setattr("inet_helpdesk_mcp.server.HelpdeskClient", factory)
+    helpdesk.route("GET", "/api/ticket/1", {"ticketId": 1})
+
+    await call(build(), "get_ticket", {"ticket_id": "1"})
+
+    assert verify == [True]
+
+
 async def test_server_info_reports_missing_credentials() -> None:
     server = build_server(Settings(base_url=BASE_URL).finalize())
 

@@ -57,7 +57,7 @@ class HelpdeskTools:
     async def client(self, ctx: Context | None) -> AsyncIterator[HelpdeskClient]:
         config = self.request_config(ctx)
         async with HelpdeskClient(
-            config, timeout=self.settings.timeout, verify=self.settings.verify_tls
+            config, timeout=self.settings.timeout, verify=self.settings.tls_verify()
         ) as client:
             yield client
 
@@ -94,6 +94,7 @@ def build_server(settings: Settings) -> MCPServer:
             "allow_local_file_attachments": settings.allow_local_files,
             "allow_base_url_header": settings.allow_url_header,
             "ignore_client_authorization": settings.ignore_client_auth,
+            "tls": settings.describe_tls(),
         }
         try:
             config = tools.request_config(ctx)
@@ -105,7 +106,7 @@ def build_server(settings: Settings) -> MCPServer:
         info["base_url"] = config.base_url
         info["authentication"] = config.source
         async with HelpdeskClient(
-            config, timeout=settings.timeout, verify=settings.verify_tls
+            config, timeout=settings.timeout, verify=settings.tls_verify()
         ) as client:
             try:
                 await client.search_tickets("", limit=1, locale=settings.default_locale)

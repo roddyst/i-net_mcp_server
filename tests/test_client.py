@@ -2,12 +2,29 @@ from __future__ import annotations
 
 import base64
 import json
+import pathlib
+import ssl
 
+import httpx
 import pytest
 
+from inet_helpdesk_mcp.client import HelpdeskClient, build_ssl_verify
+from inet_helpdesk_mcp.config import RequestConfig
 from inet_helpdesk_mcp.errors import ApiError, TransportError
 
-from conftest import RecordingHelpDesk
+from conftest import BASE_URL, RecordingHelpDesk
+
+
+@pytest.fixture
+def ca_bundle(tmp_path: pathlib.Path) -> str:
+    """A CA bundle with exactly one real certificate, taken from certifi."""
+    import certifi
+
+    marker = "-----END CERTIFICATE-----\n"
+    first = pathlib.Path(certifi.where()).read_text()
+    bundle = tmp_path / "company-ca.pem"
+    bundle.write_text(first[: first.index(marker) + len(marker)])
+    return str(bundle)
 
 
 async def test_search_tickets_posts_json(helpdesk: RecordingHelpDesk) -> None:
@@ -129,11 +146,6 @@ async def test_unknown_ticket_reports_404(helpdesk: RecordingHelpDesk) -> None:
 
 
 async def test_transport_error_is_wrapped() -> None:
-    import httpx
-
-    from inet_helpdesk_mcp.client import HelpdeskClient
-    from inet_helpdesk_mcp.config import RequestConfig
-
     def boom(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("connection refused", request=request)
 
@@ -150,8 +162,6 @@ async def test_transport_error_is_wrapped() -> None:
 
 
 async def test_basic_auth_is_sent(helpdesk: RecordingHelpDesk) -> None:
-    from inet_helpdesk_mcp.config import RequestConfig
-
     helpdesk.route("GET", "/api/ticket/1", {"ticketId": 1})
     config = RequestConfig(base_url="https://hd.example.com", username="joe", password="pw")
 
@@ -161,3 +171,37 @@ async def test_basic_auth_is_sent(helpdesk: RecordingHelpDesk) -> None:
     header = helpdesk.last_request.headers["authorization"]
     assert header.startswith("Basic ")
     assert base64.b64decode(header.split(" ", 1)[1]).decode() == "joe:pw"
+
+
+def test_ca_bundle_becomes_the_only_trusted_store(ca_bundle: str) -> None:
+    context = build_ssl_verify(ca_bundle)
+
+    assert isinstance(context, ssl.SSLContext)
+    # Exactly the one certificate from the bundle, not the certifi default.
+    assert len(context.get_ca_certs()) == 1
+
+
+def test_ssl_verify_passes_booleans_through() -> None:
+    assert build_ssl_verify(True) is True
+    assert build_ssl_verify(False) is False
+
+
+async def test_ca_bundle_is_handed_to_httpx(
+    monkeypatch: pytest.MonkeyPatch, ca_bundle: str
+) -> None:
+    recorded: dict[str, object] = {}
+    real_client = httpx.AsyncClient
+
+    def record(**kwargs: object) -> httpx.AsyncClient:
+        recorded.update(kwargs)
+        return real_client(transport=httpx.MockTransport(lambda r: httpx.Response(200)))
+
+    monkeypatch.setattr(httpx, "AsyncClient", record)
+    config = RequestConfig(base_url=BASE_URL, authorization="Bearer t")
+
+    async with HelpdeskClient(config, verify=ca_bundle):
+        pass
+
+    context = recorded["verify"]
+    assert isinstance(context, ssl.SSLContext)
+    assert len(context.get_ca_certs()) == 1
