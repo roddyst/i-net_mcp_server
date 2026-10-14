@@ -29,7 +29,7 @@ Typical flow:
      plain full-text search to find ticket ids.
   2. `get_ticket_conversation` reads one ticket with its history in a single call;
      `get_ticket`, `list_ticket_steps` and `get_ticket_step` are the finer grained
-     variants.
+     variants. `get_tickets` reads many tickets in one call.
   3. Change a ticket with the named action tools - `change_priority`,
      `change_category`, `send_email`, `close_ticket`, `authorize_ticket`,
      `bundle_tickets` and so on. Each one knows its action id and checks that
@@ -42,14 +42,14 @@ Requests waiting for authorization (status 0) never show up in
 `search_tickets`; `find_unauthorized_tickets` scans ticket ids for them.
 `ticket_statistics` counts search hits per status, priority or other field.
 
+Tools may be called in parallel; tools that read many tickets also run their
+HelpDesk requests in parallel, so prefer one `get_tickets` call over many
+`get_ticket` calls.
+
 Ticket ids are accepted as plain integers or in the encoded form used in the
 subject line of HelpDesk emails. Every call acts as the authenticated user, so
 permissions and visible fields depend on that user's roles.
 """
-
-#: How many step or ticket detail requests run at the same time. Enough to keep
-#: a conversation fast, low enough to stay a polite client of one HelpDesk.
-DETAIL_CONCURRENCY = 5
 
 #: Above this many search hits the details are not resolved: one request per
 #: ticket would turn a single search into a hundred round trips.
@@ -79,9 +79,9 @@ def _tool_result(payload: Any) -> dict[str, Any]:
     return {"result": payload}
 
 
-async def _gather_limited(tasks: Sequence[Any]) -> list[Any]:
-    """Run coroutines with a bounded number of concurrent requests."""
-    semaphore = asyncio.Semaphore(DETAIL_CONCURRENCY)
+async def _gather_limited(tasks: Sequence[Any], limit: int) -> list[Any]:
+    """Run coroutines with at most *limit* of them waiting on the HelpDesk at once."""
+    semaphore = asyncio.Semaphore(max(1, limit))
 
     async def guarded(task: Any) -> Any:
         async with semaphore:
@@ -121,6 +121,10 @@ class HelpdeskTools:
 
     async def aclose(self) -> None:
         await self.pool.aclose()
+
+    async def gather(self, tasks: Sequence[Any]) -> list[Any]:
+        """Run the requests of one tool call in parallel, up to the configured limit."""
+        return await _gather_limited(tasks, self.settings.concurrency)
 
     def normalizing(self, raw: bool) -> bool:
         return self.settings.normalize and not raw
@@ -328,7 +332,7 @@ def build_server(settings: Settings) -> MCPServer:
                     return {"ticketId": ticket_id, "error": str(exc)}
                 return tools.shape(_tool_result(record), raw=raw)
 
-            payload["tickets"] = await _gather_limited(
+            payload["tickets"] = await tools.gather(
                 [read(ticket_id) for ticket_id in ticket_ids]
             )
             return payload
@@ -354,6 +358,47 @@ def build_server(settings: Settings) -> MCPServer:
         async with tools.client(ctx) as client:
             record = await client.get_ticket(ticket_id, fields=fields)
         return tools.shape(_tool_result(record), raw=raw)
+
+    @server.tool(
+        title="Get tickets",
+        description=(
+            "Read many tickets in one call - the HelpDesk requests run in parallel. "
+            "Use this instead of calling `get_ticket` once per id. A ticket that "
+            "cannot be read is reported with its error instead of failing the call."
+        ),
+        annotations=READ_ONLY_TOOL,
+    )
+    async def get_tickets(
+        ctx: Context,
+        ticket_ids: list[str],
+        fields: str | None = DEFAULT_DETAIL_FIELDS,
+        raw: bool = False,
+    ) -> dict[str, Any]:
+        """Args:
+        ticket_ids: Ticket ids (at most 500), plain numbers or the encoded form from email subjects.
+        fields: Comma separated field and attribute names, by default subject, status,
+            priority, owner and last change. Pass an empty string for the full records.
+        raw: Return the answers of the Web-API unchanged.
+        """
+        if not 0 < len(ticket_ids) <= MAX_SCANNED_TICKETS:
+            raise HelpdeskError(
+                f"Pass between 1 and {MAX_SCANNED_TICKETS} ticket ids, got {len(ticket_ids)}."
+            )
+        async with tools.client(ctx) as client:
+
+            async def read(ticket_id: str) -> dict[str, Any]:
+                try:
+                    record = await client.get_ticket(str(ticket_id), fields=fields or None)
+                except HelpdeskError as exc:
+                    return {"ticketId": ticket_id, "error": str(exc)}
+                return tools.shape(_tool_result(record), raw=raw)
+
+            tickets = await tools.gather([read(ticket_id) for ticket_id in ticket_ids])
+        return {
+            "requested": len(ticket_ids),
+            "failed": sum(1 for ticket in tickets if "error" in ticket),
+            "tickets": tickets,
+        }
 
     @server.tool(
         title="Get ticket conversation",
@@ -407,7 +452,7 @@ def build_server(settings: Settings) -> MCPServer:
                     except HelpdeskError as exc:
                         return {"error": str(exc)}
 
-                details = await _gather_limited([read(step) for step in selected])
+                details = await tools.gather([read(step) for step in selected])
 
         entries: list[dict[str, Any]] = []
         for index, summary in enumerate(selected):
@@ -554,7 +599,7 @@ def build_server(settings: Settings) -> MCPServer:
                         return None
                     raise
 
-            records = await _gather_limited([read(ticket_id) for ticket_id in ticket_ids])
+            records = await tools.gather([read(ticket_id) for ticket_id in ticket_ids])
 
         hits = [
             tools.shape(record, raw=raw)
@@ -610,7 +655,7 @@ def build_server(settings: Settings) -> MCPServer:
                 except HelpdeskError:
                     return None
 
-            records = await _gather_limited([read(ticket_id) for ticket_id in ticket_ids])
+            records = await tools.gather([read(ticket_id) for ticket_id in ticket_ids])
 
         counts: dict[str, dict[str, int]] = {key: {} for key in keys}
         for record in records:

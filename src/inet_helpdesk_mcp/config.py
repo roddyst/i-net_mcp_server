@@ -135,6 +135,8 @@ class Settings:
     action_ids: tuple[tuple[str, str], ...] = ()
     #: How many HelpDesk connections are kept alive at the same time.
     pool_size: int = 8
+    #: How many HelpDesk requests one tool call runs at the same time.
+    concurrency: int = 10
     # Remember which of the two derived flags the operator set explicitly, so
     # finalize() can recompute the others deterministically after an override.
     url_header_explicit: bool = field(default=False, repr=False, compare=False)
@@ -151,6 +153,7 @@ class Settings:
         normalize = _env_bool("NORMALIZE")
         retries = _env_number("RETRIES", int)
         pool_size = _env_number("POOL_SIZE", int)
+        concurrency = _env_number("CONCURRENCY", int)
 
         return cls(
             base_url=normalize_base_url(base_url) if base_url else None,
@@ -177,6 +180,7 @@ class Settings:
             default_automail=_env("DEFAULT_AUTOMAIL"),
             action_ids=parse_action_id_overrides(_env("ACTION_IDS")),
             pool_size=pool_size if pool_size is not None else 8,
+            concurrency=concurrency if concurrency is not None else 10,
             url_header_explicit=allow_url_header is not None,
             local_files_explicit=allow_local_files is not None,
         ).finalize()
@@ -210,6 +214,10 @@ class Settings:
         if self.pool_size < 1:
             raise ConfigurationError(
                 f"The connection pool needs room for at least one client, got {self.pool_size}."
+            )
+        if self.concurrency < 1:
+            raise ConfigurationError(
+                f"At least one request has to run at a time, got a concurrency of {self.concurrency}."
             )
         if self.transport == "streamable-http":
             updates["transport"] = "http"

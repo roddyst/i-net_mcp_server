@@ -160,6 +160,7 @@ Fertige systemd-Unit, Env-File und Schritt-für-Schritt-Anleitung dafür:
 | `server_info` | – | Zeigt die Konfiguration und prüft Verbindung + Zugangsdaten. Erste Anlaufstelle bei Fehlern. |
 | `search_tickets` | `POST /api/ticket/search` | Tickets über eine Suchphrase finden (`query`, `limit`, `start`, `locale`); mit `include_details` gleich samt Betreff und Status. |
 | `get_ticket` | `GET /api/ticket/<id>` | Felder und Attribute eines Tickets; `fields` grenzt die Antwort ein. |
+| `get_tickets` | `GET /api/ticket/<id>` je Id, parallel | Viele Tickets in einem Aufruf (max. 500); nicht lesbare Tickets erscheinen mit ihrem Fehler, statt den Aufruf abzubrechen. |
 | `get_ticket_conversation` | mehrere | Ticket **und** Bearbeitungsschritte inklusive Texte in einem Aufruf — der schnellste Weg, ein Ticket zu verstehen. |
 | `list_ticket_actions` | `GET /api/ticket/<id>/actions` | Aktuell erlaubte Ticketaktionen als Map „Id → Anzeigename". |
 | `list_ticket_steps` | `GET /api/ticket/<id>/steps` | Bearbeitungsschritte eines Tickets ohne Texte, optional ab Zeitstempel `since`. |
@@ -361,6 +362,7 @@ Kommandozeile gewinnt.
 | `INET_NORMALIZE` | `--no-normalize` | `true` | Antworten aufbereiten (Anzeigewerte, ISO-Zeitstempel, HTML zu Text) |
 | `INET_RETRIES` | `--retries` | `2` | Wiederholungen eines fehlgeschlagenen `GET`; `POST` wird nie wiederholt |
 | `INET_POOL_SIZE` | `--pool-size` | `8` | Gleichzeitig offen gehaltene HelpDesk-Verbindungen |
+| `INET_CONCURRENCY` | `--concurrency` | `10` | Parallele HelpDesk-Anfragen je Tool-Aufruf (`get_tickets`, `find_unauthorized_tickets`, `ticket_statistics`, …) |
 | `INET_DRY_RUN` | `--dry-run` | `false` | Schreibende Aufrufe prüfen und zurückmelden, aber nicht senden |
 | `INET_ALLOWED_ACTIONS` | `--allowed-actions` | – | Erlaubte Ticketaktions-Ids, kommasepariert |
 | `INET_DENIED_ACTIONS` | `--denied-actions` | – | Gesperrte Ticketaktions-Ids, kommasepariert |
@@ -455,7 +457,7 @@ act on tickets, with attachment support. Run it over **stdio** (credentials from
 `INET_BASE_URL` + `INET_TOKEN`) or over **streamable HTTP**, where each client
 authenticates by sending its own `Authorization: Bearer <token>` header — and,
 when no base URL is configured, selects the HelpDesk instance with an
-`X-Inet-Base-Url` header. Tools: `server_info`, `search_tickets`, `get_ticket`,
+`X-Inet-Base-Url` header. Tools: `server_info`, `search_tickets`, `get_ticket`, `get_tickets`,
 `get_ticket_conversation`, `list_ticket_actions`, `list_ticket_steps`,
 `get_ticket_step`, `create_ticket`, `apply_ticket_action`, `find_unauthorized_tickets`,
 `ticket_statistics`, plus one named tool per ticket action (`change_priority`,
