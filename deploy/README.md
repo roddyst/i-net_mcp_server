@@ -7,6 +7,37 @@ Server: jeder Aufruf wird als ein technischer Benutzer ausgeführt.
 
 Alle Befehle als `root` auf dem Zielserver.
 
+## Schnellweg: Installationsskript
+
+`deploy/install.sh` erledigt die Schritte 1–4 und dient zugleich zum
+Aktualisieren — ein erneuter Aufruf holt die gewünschte Version, lässt
+`/etc/inet-helpdesk-mcp/env` unangetastet und startet den Dienst neu.
+
+```bash
+git clone https://github.com/roddyst/i-net_mcp_server
+sudo ./i-net_mcp_server/deploy/install.sh
+
+# oder ohne Clone
+curl -fsSL https://raw.githubusercontent.com/roddyst/i-net_mcp_server/main/deploy/install.sh \
+  | sudo bash
+```
+
+| Option | Standard | Bedeutung |
+| --- | --- | --- |
+| `--ref REF` | `main` | Branch, Tag oder Commit, der installiert wird |
+| `--host ADRESSE` | `127.0.0.1` | Bind-Adresse des Dienstes |
+| `--port PORT` | `8765` | Port des Dienstes |
+| `--prefix DIR` | `/opt/inet-helpdesk-mcp` | Installationsverzeichnis |
+| `--no-service` | – | nur das Paket installieren, systemd nicht anfassen |
+
+Beim ersten Lauf legt das Skript die Env-Datei aus der Vorlage an und startet
+den Dienst **nicht**, solange dort noch die Platzhalter stehen. Dann
+`INET_BASE_URL` und `INET_TOKEN` eintragen und `systemctl restart
+inet-helpdesk-mcp`. Ändert sich die Unit bei einem Update, bleibt die alte als
+`.bak` liegen.
+
+Die folgenden Abschnitte beschreiben dieselben Schritte von Hand.
+
 ## 1. Benutzer und Verzeichnis anlegen
 
 ```bash
@@ -87,6 +118,12 @@ Ein `Authorization`-Header ist nicht nötig — die Unit startet den Server mit
 und ignoriert Header, die der Agent für eigene Zwecke mitschickt.
 
 ## Aktualisieren
+
+```bash
+sudo ./deploy/install.sh            # oder --ref <tag/branch>
+```
+
+Von Hand:
 
 ```bash
 /opt/inet-helpdesk-mcp/venv/bin/pip install --upgrade \
