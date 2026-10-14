@@ -6,6 +6,29 @@ suchen und lesen, Bearbeitungsschritte ansehen, neue Tickets anlegen und
 Ticketaktionen (antworten, schließen, eskalieren …) ausführen — inklusive
 Dateianhängen.
 
+## Installieren / Aktualisieren in einer Zeile
+
+Auf dem Server, auf dem der Agent läuft (Debian/Ubuntu mit systemd):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/roddyst/i-net_mcp_server/main/deploy/install.sh | sudo bash
+```
+
+Das Skript installiert den MCP-Server als Dienst unter `http://127.0.0.1:8765/mcp`.
+Beim ersten Lauf danach Zugangsdaten eintragen und starten:
+
+```bash
+sudo editor /etc/inet-helpdesk-mcp/env      # INET_BASE_URL und INET_TOKEN
+sudo systemctl restart inet-helpdesk-mcp
+```
+
+Dieselbe Zeile aktualisiert später auf den neuesten Stand; die Zugangsdaten
+bleiben erhalten. Optionen wie Port oder Version hängen an `bash -s --` an,
+z. B. `… | sudo bash -s -- --port 9100 --ref main`. Details:
+[`deploy/README.md`](deploy/README.md).
+
+---
+
 Der Server kann auf zwei Arten betrieben werden:
 
 | Modus | Wofür | Authentifizierung |
