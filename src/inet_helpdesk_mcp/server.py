@@ -11,10 +11,12 @@ from mcp.server.mcpserver import Context, MCPServer
 from mcp.types import ToolAnnotations
 
 from . import __version__
+from .action_tools import register_action_tools
+from .actions import describe_available
 from .attachments import Attachment, prepare_attachments
 from .client import ClientPool, HelpdeskClient
 from .config import RequestConfig, Settings, resolve_request_config
-from .errors import HelpdeskError
+from .errors import ApiError, HelpdeskError
 from .normalize import html_to_text, normalize_record, truncate
 
 logger = logging.getLogger(__name__)
@@ -28,9 +30,17 @@ Typical flow:
   2. `get_ticket_conversation` reads one ticket with its history in a single call;
      `get_ticket`, `list_ticket_steps` and `get_ticket_step` are the finer grained
      variants.
-  3. `list_ticket_actions` shows which actions the current user may apply, then
-     `apply_ticket_action` performs one of them (answer, close, escalate, ...).
-  4. `create_ticket` opens a new ticket.
+  3. Change a ticket with the named action tools - `change_priority`,
+     `change_category`, `send_email`, `close_ticket`, `authorize_ticket`,
+     `bundle_tickets` and so on. Each one knows its action id and checks that
+     the action is available for the ticket right now.
+  4. `list_ticket_actions` plus `apply_ticket_action` cover any action without a
+     tool of its own.
+  5. `create_ticket` opens a new ticket.
+
+Requests waiting for authorization (status 0) never show up in
+`search_tickets`; `find_unauthorized_tickets` scans ticket ids for them.
+`ticket_statistics` counts search hits per status, priority or other field.
 
 Ticket ids are accepted as plain integers or in the encoded form used in the
 subject line of HelpDesk emails. Every call acts as the authenticated user, so
@@ -44,6 +54,12 @@ DETAIL_CONCURRENCY = 5
 #: Above this many search hits the details are not resolved: one request per
 #: ticket would turn a single search into a hundred round trips.
 MAX_RESOLVED_DETAILS = 50
+
+#: Upper bound for tools that read one ticket per id (scan, statistics).
+MAX_SCANNED_TICKETS = 500
+
+#: Status of a request that still waits for a dispatcher to authorize it.
+UNAUTHORIZED_STATUS = 0
 
 #: A short, useful field set for search results.
 DEFAULT_DETAIL_FIELDS = "subject,statusid,priorityid,ownerid,lastchanged"
@@ -117,6 +133,70 @@ class HelpdeskTools:
         """Record a writing call. Never contains a token or a password."""
         rendered = " ".join(f"{key}={value}" for key, value in details.items() if value)
         logger.info("%s %s", event, rendered)
+
+    async def apply(
+        self,
+        ctx: Context | None,
+        event: str,
+        ticket_id: str,
+        action_id: str,
+        *,
+        text: str = "",
+        html_content: bool = False,
+        ticket_fields: Mapping[str, str] | None = None,
+        step_fields: Mapping[str, str] | None = None,
+        action_arguments: Mapping[str, str] | None = None,
+        attachments: Sequence[Attachment] | None = None,
+        check_available: bool = False,
+    ) -> dict[str, Any]:
+        """Apply one ticket action; shared by every writing tool on a ticket.
+
+        With ``check_available`` the ticket's current actions are read first, so
+        an action that does not fit the ticket's state fails with the list of
+        actions that do - the HelpDesk itself often answers such a call with a
+        bare HTTP 500.
+        """
+        self.policy.check(action_id)
+
+        payload: dict[str, Any] = {
+            "actionId": action_id,
+            "text": text,
+            "htmlContent": html_content,
+        }
+        if ticket_fields:
+            payload["ticketFields"] = dict(ticket_fields)
+        if step_fields:
+            payload["stepFields"] = dict(step_fields)
+        arguments = self.policy.apply_automail(action_arguments)
+        if arguments:
+            payload["actionArguments"] = arguments
+
+        uploads = prepare_attachments(
+            attachments, allow_local_files=self.settings.allow_local_files
+        )
+        path = f"/api/ticket/{ticket_id}/apply"
+        if self.settings.dry_run:
+            self.audit(event, ticket=ticket_id, action=action_id, dry_run=True)
+            return _dry_run(payload, path, uploads)
+
+        async with self.client(ctx) as client:
+            if check_available:
+                available = await client.get_ticket_actions(ticket_id)
+                if isinstance(available, Mapping) and action_id not in available:
+                    raise HelpdeskError(
+                        f"The ticket action {action_id} is not available for ticket "
+                        f"{ticket_id} right now (state, permissions or configuration). "
+                        f"Available actions: {describe_available(available)}."
+                    )
+            result = await client.apply_action(ticket_id, payload, attachments=uploads)
+        self.audit(
+            event,
+            ticket=ticket_id,
+            action=action_id,
+            step=result,
+            attachments=len(uploads),
+        )
+        return {"ticketId": ticket_id, "actionId": action_id, "stepId": result}
 
 
 def build_server(settings: Settings) -> MCPServer:
@@ -429,6 +509,127 @@ def build_server(settings: Settings) -> MCPServer:
                 result["textWasHtml"] = True
         return result
 
+    @server.tool(
+        title="Find unauthorized tickets",
+        description=(
+            "Find requests that still wait for authorization (status 0, 'Anfrage'). "
+            "The ticket search never returns them, so this tool reads a range of "
+            "ticket ids one by one and keeps those in status 0 - start just below the "
+            "newest known ticket id and scan backwards. Needs the dispatcher role. "
+            "Authorize a hit with `authorize_ticket`."
+        ),
+        annotations=READ_ONLY_TOOL,
+    )
+    async def find_unauthorized_tickets(
+        ctx: Context,
+        start_id: int,
+        count: int = 100,
+        descending: bool = True,
+        raw: bool = False,
+    ) -> dict[str, Any]:
+        """Args:
+        start_id: First ticket id to check, usually the newest known id.
+        count: How many consecutive ids to check (at most 500).
+        descending: Scan towards older tickets (default) or newer ones.
+        raw: Return the ticket records unchanged.
+        """
+        if not 0 < count <= MAX_SCANNED_TICKETS:
+            raise HelpdeskError(f"count must be between 1 and {MAX_SCANNED_TICKETS}.")
+        step = -1 if descending else 1
+        ticket_ids = [
+            start_id + step * offset
+            for offset in range(count)
+            if start_id + step * offset > 0
+        ]
+
+        async with tools.client(ctx) as client:
+
+            async def read(ticket_id: int) -> Any:
+                try:
+                    return await client.get_ticket(
+                        str(ticket_id), fields="subject,statusid,ownerid,inquirydate"
+                    )
+                except ApiError as exc:
+                    if exc.status_code == 404:
+                        return None
+                    raise
+
+            records = await _gather_limited([read(ticket_id) for ticket_id in ticket_ids])
+
+        hits = [
+            tools.shape(record, raw=raw)
+            for record in records
+            if isinstance(record, Mapping) and _status_of(record) == UNAUTHORIZED_STATUS
+        ]
+        return {
+            "scannedIds": [ticket_ids[0], ticket_ids[-1]] if ticket_ids else [],
+            "checked": len(ticket_ids),
+            "missing": sum(1 for record in records if record is None),
+            "tickets": hits,
+        }
+
+    @server.tool(
+        title="Ticket statistics",
+        description=(
+            "Count the tickets matching a search phrase by field, e.g. how many open "
+            "tickets per status, priority or resource. Reads every hit, so it is "
+            "limited to 500 tickets - narrow the phrase for larger sets."
+        ),
+        annotations=READ_ONLY_TOOL,
+    )
+    async def ticket_statistics(
+        ctx: Context,
+        query: str,
+        group_by: str = "statusid,priorityid",
+        limit: int = 200,
+        locale: str | None = None,
+    ) -> dict[str, Any]:
+        """Args:
+        query: Search phrase as for `search_tickets`; empty matches everything.
+        group_by: Comma separated field keys to count by, e.g. "statusid,resourceid".
+        limit: How many hits to read and count (at most 500).
+        locale: Language of the search phrase.
+        """
+        if not 0 < limit <= MAX_SCANNED_TICKETS:
+            raise HelpdeskError(f"limit must be between 1 and {MAX_SCANNED_TICKETS}.")
+        keys = [key.strip() for key in group_by.split(",") if key.strip()]
+        if not keys:
+            raise HelpdeskError("group_by needs at least one field key.")
+
+        async with tools.client(ctx) as client:
+            found = _tool_result(
+                await client.search_tickets(
+                    query, limit=limit, start=0, locale=locale or settings.default_locale
+                )
+            )
+            ticket_ids = found.get("ticketList") or []
+
+            async def read(ticket_id: Any) -> Any:
+                try:
+                    return await client.get_ticket(str(ticket_id), fields=",".join(keys))
+                except HelpdeskError:
+                    return None
+
+            records = await _gather_limited([read(ticket_id) for ticket_id in ticket_ids])
+
+        counts: dict[str, dict[str, int]] = {key: {} for key in keys}
+        for record in records:
+            if not isinstance(record, Mapping):
+                continue
+            for key in keys:
+                label = _display_value(record, key)
+                counts[key][label] = counts[key].get(label, 0) + 1
+        return {
+            "query": query,
+            "counted": sum(1 for record in records if isinstance(record, Mapping)),
+            "unreadable": sum(1 for record in records if not isinstance(record, Mapping)),
+            "hasMore": bool(found.get("hasMore")),
+            "counts": {
+                key: dict(sorted(values.items(), key=lambda item: -item[1]))
+                for key, values in counts.items()
+            },
+        }
+
     if settings.read_only:
         return server
 
@@ -528,39 +729,20 @@ def build_server(settings: Settings) -> MCPServer:
             resubmission. Values that need JSON must be stringified.
         attachments: Optional files to attach.
         """
-        tools.policy.check(action_id)
-
-        payload: dict[str, Any] = {
-            "actionId": action_id,
-            "text": text,
-            "htmlContent": html_content,
-        }
-        if ticket_fields:
-            payload["ticketFields"] = ticket_fields
-        if step_fields:
-            payload["stepFields"] = step_fields
-        arguments = tools.policy.apply_automail(action_arguments)
-        if arguments:
-            payload["actionArguments"] = arguments
-
-        uploads = prepare_attachments(
-            attachments, allow_local_files=settings.allow_local_files
-        )
-        path = f"/api/ticket/{ticket_id}/apply"
-        if settings.dry_run:
-            tools.audit("apply_ticket_action", ticket=ticket_id, action=action_id, dry_run=True)
-            return _dry_run(payload, path, uploads)
-
-        async with tools.client(ctx) as client:
-            result = await client.apply_action(ticket_id, payload, attachments=uploads)
-        tools.audit(
+        return await tools.apply(
+            ctx,
             "apply_ticket_action",
-            ticket=ticket_id,
-            action=action_id,
-            step=result,
-            attachments=len(uploads),
+            ticket_id,
+            action_id,
+            text=text,
+            html_content=html_content,
+            ticket_fields=ticket_fields,
+            step_fields=step_fields,
+            action_arguments=action_arguments,
+            attachments=attachments,
         )
-        return {"ticketId": ticket_id, "stepId": result}
+
+    register_action_tools(server, tools)
 
     return server
 
@@ -579,3 +761,30 @@ def _dry_run(
             for description, content in uploads
         ],
     }
+
+
+def _ticket_value(record: Mapping[str, Any], key: str) -> tuple[Any, Any]:
+    """A field or attribute of a raw ticket record, with its display value."""
+    for section in ("fields", "attributes"):
+        values = record.get(section)
+        if isinstance(values, Mapping) and key in values:
+            return values[key], values.get(f"{key}_display")
+    return None, None
+
+
+def _status_of(record: Mapping[str, Any]) -> int | None:
+    value, _ = _ticket_value(record, "statusid")
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _display_value(record: Mapping[str, Any], key: str) -> str:
+    """How a value is counted: display name and id, so both stay visible."""
+    value, display = _ticket_value(record, key)
+    if value is None:
+        return "<not set>"
+    if display not in (None, "", value):
+        return f"{display} ({value})"
+    return str(value)
