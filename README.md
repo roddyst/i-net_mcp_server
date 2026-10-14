@@ -125,7 +125,8 @@ INET_BASE_URL=https://helpdesk.example.com:9000 INET_TOKEN=… \
 ```
 
 Fertige systemd-Unit, Env-File und Schritt-für-Schritt-Anleitung dafür:
-[`deploy/`](deploy/README.md).
+[`deploy/`](deploy/README.md). Installieren und Aktualisieren in einem Schritt:
+`sudo ./deploy/install.sh`.
 
 ---
 
