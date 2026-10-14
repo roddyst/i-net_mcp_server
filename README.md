@@ -142,9 +142,79 @@ Fertige systemd-Unit, Env-File und Schritt-für-Schritt-Anleitung dafür:
 | `get_ticket_step` | `GET /api/ticket/<id>/steps/<step-id>` | Ein Bearbeitungsschritt inklusive Text. |
 | `create_ticket` | `POST /api/ticket/create` | Neues Ticket anlegen, liefert die Ticket-Id. |
 | `apply_ticket_action` | `POST /api/ticket/<id>/apply` | Ticketaktion ausführen, liefert die Id des neuen Bearbeitungsschritts. |
+| `find_unauthorized_tickets` | `GET /api/ticket/<id>` je Id | Findet Anfragen in Status 0, die `search_tickets` nie liefert, indem ein Id-Bereich abgetastet wird (max. 500). |
+| `ticket_statistics` | Suche + `GET /api/ticket/<id>` | Zählt die Treffer einer Suchphrase je Feld, z. B. Status oder Priorität (max. 500 Tickets). |
+| *Aktions-Tools* | `POST /api/ticket/<id>/apply` | Ein eigenes Tool je Ticketaktion, siehe unten. |
 
-`create_ticket` und `apply_ticket_action` werden mit `--read-only` gar nicht
-erst registriert — sinnvoll, wenn ein Agent nur lesen können soll.
+Alle schreibenden Tools werden mit `--read-only` gar nicht erst registriert —
+sinnvoll, wenn ein Agent nur lesen können soll.
+
+### Ein Tool je Ticketaktion
+
+`apply_ticket_action` kann jede Aktion ausführen, verlangt vom Agenten aber die
+richtige Id und den richtigen Payload. Die Aktions-Tools nehmen ihm beides ab:
+Sie kennen ihre Aktions-Id, übersetzen typisierte Parameter in Ticketfelder bzw.
+Aktionsargumente und prüfen vorab über `/actions`, ob die Aktion für das Ticket
+gerade verfügbar ist. Wenn nicht, kommt statt eines nackten HTTP 500 die Liste
+der verfügbaren Aktionen zurück.
+
+| Tool | Aktion | Parameter → Web-API |
+| --- | --- | --- |
+| `change_ticket_fields` | -29 Ticket-Feld ändern | `fields` → `ticketFields` |
+| `change_priority` | -29 (statt 3 Priorität ändern) | `priority_id` → `priorityid` |
+| `change_category` | -29 (statt -26 Kategorie ändern) | `category_id` → `categoryid` |
+| `change_classification` | -29 (statt -28 Klassifizierung ändern) | `classification_id` → `classificationid` |
+| `change_subject` | -29 (statt -31 Betreff ändern) | `subject` → `subject` |
+| `change_ticket_owner` | -29 (statt -10 Benutzer ändern) | `owner_guid` → `ownerid` |
+| `change_itil` | -29 (statt -15 ITIL ändern) | `itil_id` → `itilid` |
+| `change_deadline` | -29 (statt -17 Deadline ändern) | `deadline` (ms oder ISO 8601) → `deadline` ¹ |
+| `change_resource` | -29 | `resource_guid` → `resourceid` ¹ |
+| `send_email` | -7 E-Mail versenden | `send_mode` → `ticketextension.applyanswer` (`SEND_ONLY`, `SEND_AND_CLOSE`, `SEND_AND_CLOSE_AFTER_X_DAYS`) |
+| `add_attachment` | -21 Anlage manuell hinzufügen | `attachments` |
+| `change_affected_assets` | -39 Betroffene Assets ändern | `asset_guids` → `inventory_affectedassets` |
+| `authorize_ticket` | 5 Anfrage autorisieren ² | – |
+| `close_ticket` | 2 Beenden ² | – |
+| `delete_ticket` | 7 Anfrage/Auftrag löschen ² | – |
+| `set_auto_close` | -32 Automatisch Beenden | – |
+| `receive_email` | -23 E-Mail empfangen (dem Endanwender nicht anzeigen) | `text` |
+| `live_support_answer` | -123 Live Support Antwort | `text` |
+| `bundle_tickets` | -35 Tickets verknüpfen | generisch ³ |
+| `edit_step_text` | -22 Text eines Bearbeitungsschrittes verändern | generisch ³ |
+| `delete_attachment` | -6 Anlage löschen | generisch ³ |
+| `change_target_time` | -30 Sollzeit ändern | generisch ³ |
+| `change_identifier` | -27 Kennung ändern | generisch ³ |
+| `change_sharing` | -38 Freigaben ändern | generisch ³ |
+| `use_stopwatch` | -16 Stoppuhr verwenden | generisch ³ |
+| `apply_quick_ticket` | -33 Quick-Ticket anwenden | generisch ³ |
+| `run_form` | -41 Formular ausführen | generisch ³ |
+| `start_process` | -19 Prozess starten | generisch ³ |
+| `add_to_knowledge_base` | -4 Hinzufügen zu Wissensbasis | generisch ³ |
+| `rate_ticket` | -40 Ticket bewerten | generisch ³ |
+| `live_support_to_ticket` | -124 Live Support in Ticket umwandeln | generisch ³ |
+| `close_live_support_to_ticket` | -125 Beenden und in Ticket umwandeln | generisch ³ |
+| `live_support_ai_answer` | -126 Live Support KI-Antwort | generisch ³ |
+| `request_supporter_answer` | -127 Supporter soll antworten | generisch ³ |
+
+Feldänderungen laufen über **-29**, auch wo es eine eigene Aktion gibt: Dieser
+Weg ist gegen ein echtes HelpDesk geprüft, während z. B. `3` mit HTTP 500
+antwortet, ohne das fehlende Argument zu nennen. Wer eine eigene Aktion
+verwenden will, biegt das Tool um (`--action-ids=change_priority=3`).
+
+¹ Der Feldschlüssel ist von i-net nicht dokumentiert. Ein falscher Schlüssel
+wird vom HelpDesk abgelehnt (kein stilles Verwerfen). Den richtigen Schlüssel
+zeigt `get_ticket` eines Tickets, an dem das Feld gesetzt ist.
+
+² Positive Ids sind pro Installation konfigurierte Aktionen. Weichen sie ab:
+`--action-ids=close_ticket=12,authorize_ticket=15` (bzw. `INET_ACTION_IDS`).
+
+³ Die Web-API-Doku nennt die nötigen Argumente nicht. Diese Tools nehmen
+`text`, `ticket_fields`, `step_fields`, `action_arguments` und `attachments`
+wie `apply_ticket_action`. Ein falsches Aktionsargument verwirft der HelpDesk
+stillschweigend, schreibt die gültigen aber ins Debug-Log. Sobald sie bekannt
+sind, lohnt sich ein typisierter Parameter.
+
+`--allowed-actions` / `--denied-actions` blenden auch die Aktions-Tools aus,
+deren Id gesperrt ist; `--dry-run` und `--default-automail` gelten für sie genauso.
 
 Ticket-Ids werden sowohl als Zahl als auch in der kodierten Form akzeptiert,
 die in den Betreffzeilen der HelpDesk-E-Mails steht.
@@ -271,6 +341,7 @@ Kommandozeile gewinnt.
 | `INET_ALLOWED_ACTIONS` | `--allowed-actions` | – | Erlaubte Ticketaktions-Ids, kommasepariert |
 | `INET_DENIED_ACTIONS` | `--denied-actions` | – | Gesperrte Ticketaktions-Ids, kommasepariert |
 | `INET_DEFAULT_AUTOMAIL` | `--default-automail` | – | Standardwert für `ticketextension.automail` (`NEVER`, `NO_MAILS_TO_ENDUSER`, `SERVERSETTING`, `ALWAYS`) |
+| `INET_ACTION_IDS` | `--action-ids` | – | Abweichende Aktions-Ids der Aktions-Tools, z. B. `close_ticket=12,authorize_ticket=15` |
 
 ### HelpDesk hinter einer internen CA
 
@@ -341,7 +412,7 @@ das Feld `tls` von `server_info`.
   werden nie geloggt.
 * Der Server macht genau das, was der angemeldete Benutzer darf — die
   Rechteprüfung bleibt beim HelpDesk.
-* `apply_ticket_action` und `create_ticket` verändern Daten und können je nach
+* `apply_ticket_action`, `create_ticket` und die Aktions-Tools verändern Daten und können je nach
   Konfiguration E-Mails an Endanwender auslösen. Serverseitig verhindert das
   `--default-automail NEVER`, im einzelnen Aufruf das Aktionsargument
   `"ticketextension.automail": "NEVER"`. Zum Einfahren eines Agenten gegen ein
@@ -362,7 +433,9 @@ authenticates by sending its own `Authorization: Bearer <token>` header — and,
 when no base URL is configured, selects the HelpDesk instance with an
 `X-Inet-Base-Url` header. Tools: `server_info`, `search_tickets`, `get_ticket`,
 `get_ticket_conversation`, `list_ticket_actions`, `list_ticket_steps`,
-`get_ticket_step`, `create_ticket`, `apply_ticket_action`. Answers are reshaped for
+`get_ticket_step`, `create_ticket`, `apply_ticket_action`, `find_unauthorized_tickets`,
+`ticket_statistics`, plus one named tool per ticket action (`change_priority`,
+`send_email`, `close_ticket`, `bundle_tickets`, ...). Answers are reshaped for
 the agent (display values merged, ISO timestamps added, HTML step texts converted;
 `raw: true` or `--no-normalize` opts out). Guard rails for the writing side:
 `--read-only`, `--dry-run`, `--allowed-actions` / `--denied-actions` and

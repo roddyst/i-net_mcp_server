@@ -7,6 +7,7 @@ import base64
 import pytest
 from mcp.server.mcpserver.exceptions import ToolError
 
+from inet_helpdesk_mcp.actions import ACTION_SPECS
 from inet_helpdesk_mcp.config import Settings
 from inet_helpdesk_mcp.server import build_server
 
@@ -45,16 +46,20 @@ async def test_tool_inventory() -> None:
         "list_ticket_actions",
         "list_ticket_steps",
         "get_ticket_step",
+        "find_unauthorized_tickets",
+        "ticket_statistics",
         "create_ticket",
         "apply_ticket_action",
-    }
+    } | {spec.name for spec in ACTION_SPECS}
 
 
 async def test_read_only_hides_write_tools() -> None:
     names = {tool.name for tool in await build(read_only=True).list_tools()}
     assert "create_ticket" not in names
     assert "apply_ticket_action" not in names
+    assert not names & {spec.name for spec in ACTION_SPECS}
     assert "get_ticket" in names
+    assert "find_unauthorized_tickets" in names
 
 
 async def test_search_tickets_tool(patched_client: RecordingHelpDesk) -> None:
@@ -163,7 +168,7 @@ async def test_apply_ticket_action_tool(patched_client: RecordingHelpDesk) -> No
         {"ticket_id": "5", "action_id": "-12", "text": "Erledigt"},
     )
 
-    assert payload == {"ticketId": "5", "stepId": "890"}
+    assert payload == {"ticketId": "5", "actionId": "-12", "stepId": "890"}
     assert patched_client.last_json() == {
         "actionId": "-12",
         "text": "Erledigt",

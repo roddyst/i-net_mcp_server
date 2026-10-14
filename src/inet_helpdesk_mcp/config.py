@@ -13,6 +13,7 @@ import os
 from dataclasses import dataclass, field, replace
 from typing import Mapping
 
+from .actions import parse_action_id_overrides
 from .errors import AuthenticationError, ConfigurationError
 from .policy import ActionPolicy, parse_action_ids, validate_automail
 
@@ -130,6 +131,8 @@ class Settings:
     denied_actions: tuple[str, ...] = ()
     #: Value for the ticketextension.automail argument when the caller sets none.
     default_automail: str | None = None
+    #: Per-installation ticket action ids of the action tools, as (tool, id) pairs.
+    action_ids: tuple[tuple[str, str], ...] = ()
     #: How many HelpDesk connections are kept alive at the same time.
     pool_size: int = 8
     # Remember which of the two derived flags the operator set explicitly, so
@@ -172,6 +175,7 @@ class Settings:
             allowed_actions=parse_action_ids(_env("ALLOWED_ACTIONS")),
             denied_actions=parse_action_ids(_env("DENIED_ACTIONS")),
             default_automail=_env("DEFAULT_AUTOMAIL"),
+            action_ids=parse_action_id_overrides(_env("ACTION_IDS")),
             pool_size=pool_size if pool_size is not None else 8,
             url_header_explicit=allow_url_header is not None,
             local_files_explicit=allow_local_files is not None,

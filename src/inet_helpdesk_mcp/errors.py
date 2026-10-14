@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
+from mcp.server.mcpserver.exceptions import ToolError
 
-class HelpdeskError(Exception):
-    """Base class for every error this server reports back to the agent."""
+
+class HelpdeskError(ToolError):
+    """Base class for every error this server reports back to the agent.
+
+    A ``ToolError`` because the MCP SDK (from 2.3 on) only passes the text of
+    deliberate tool errors to the client; any other exception reaches the agent
+    as a bare "Error executing tool", without the HTTP status or the hint.
+    """
 
 
 class ConfigurationError(HelpdeskError):

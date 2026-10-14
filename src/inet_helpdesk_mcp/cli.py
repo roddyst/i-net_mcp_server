@@ -8,6 +8,7 @@ import sys
 from dataclasses import replace
 
 from . import __version__
+from .actions import parse_action_id_overrides
 from .config import Settings, normalize_base_url
 from .errors import HelpdeskError
 from .policy import AUTOMAIL_VALUES, parse_action_ids
@@ -59,7 +60,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--read-only",
         action="store_true",
-        help="Only expose reading tools; create_ticket and apply_ticket_action are hidden.",
+        help="Only expose reading tools; every tool that changes tickets is hidden.",
     )
     parser.add_argument(
         "--allow-url-header",
@@ -132,6 +133,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--action-ids",
+        metavar="TOOL=ID,...",
+        help=(
+            "Ticket action ids of the action tools where this installation differs, "
+            "e.g. --action-ids=close_ticket=12,authorize_ticket=5"
+        ),
+    )
+    parser.add_argument(
         "--log-level",
         default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
@@ -193,6 +202,8 @@ def settings_from_args(args: argparse.Namespace) -> Settings:
         updates["denied_actions"] = parse_action_ids(args.denied_actions)
     if args.default_automail:
         updates["default_automail"] = args.default_automail
+    if args.action_ids:
+        updates["action_ids"] = parse_action_id_overrides(args.action_ids)
 
     return replace(settings, **updates).finalize() if updates else settings
 
