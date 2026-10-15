@@ -193,7 +193,7 @@ der verfügbaren Aktionen zurück.
 | `change_itil` | -29 (statt -15 ITIL ändern) | `itil_id` → `itilid` |
 | `change_deadline` | -29 (statt -17 Deadline ändern) | `deadline` (ms oder ISO 8601) → `deadline` ¹ |
 | `change_resource` | -29 | `resource_guid` → `resourceid` ¹ |
-| `send_email` | -7 E-Mail versenden | `send_mode` → `ticketextension.applyanswer` (`SEND_ONLY`, `SEND_AND_CLOSE`, `SEND_AND_CLOSE_AFTER_X_DAYS`) |
+| `send_email` | -7 E-Mail versenden | `to` → `reastepemailan` (Pflicht), `subject` → `reastepdesc`, `mail_from` → `reastepemailin` (Standard: `INET_MAIL_FROM`), `send_mode` → `ticketextension.applyanswer` (`SEND_ONLY`, `SEND_AND_CLOSE`, `SEND_AND_CLOSE_AFTER_X_DAYS`). Ohne Empfänger antwortet der HelpDesk mit HTTP 500 „Die E-Mail muss eine Empfängeradresse haben.“ |
 | `add_attachment` | -21 Anlage manuell hinzufügen | `attachments` |
 | `change_affected_assets` | -39 Betroffene Assets ändern | `asset_guids` → `inventory_affectedassets` |
 | `authorize_ticket` | 5 Anfrage autorisieren ² | – |
@@ -365,6 +365,7 @@ Kommandozeile gewinnt.
 | `INET_ALLOWED_ACTIONS` | `--allowed-actions` | – | Erlaubte Ticketaktions-Ids, kommasepariert |
 | `INET_DENIED_ACTIONS` | `--denied-actions` | – | Gesperrte Ticketaktions-Ids, kommasepariert |
 | `INET_DEFAULT_AUTOMAIL` | `--default-automail` | – | Standardwert für `ticketextension.automail` (`NEVER`, `NO_MAILS_TO_ENDUSER`, `SERVERSETTING`, `ALWAYS`) |
+| `INET_MAIL_FROM` | `--mail-from` | – | Absender-Postfach für `send_email`, wenn der Aufruf keins nennt (z. B. die Support-Adresse des HelpDesk) |
 | `INET_ACTION_IDS` | `--action-ids` | – | Abweichende Aktions-Ids der Aktions-Tools, z. B. `close_ticket=12,authorize_ticket=15` |
 
 ### HelpDesk hinter einer internen CA

@@ -142,6 +142,7 @@ def test_guard_rail_switches() -> None:
             "--allowed-actions=-9,-12",
             "--denied-actions=-2",
             "--default-automail", "NEVER",
+            "--mail-from", "support@example.com",
         ]
     )
 
@@ -152,6 +153,7 @@ def test_guard_rail_switches() -> None:
     assert settings.allowed_actions == ("-9", "-12")
     assert settings.denied_actions == ("-2",)
     assert settings.default_automail == "NEVER"
+    assert settings.mail_from == "support@example.com"
 
 
 def test_negative_action_ids_need_the_equals_form() -> None:

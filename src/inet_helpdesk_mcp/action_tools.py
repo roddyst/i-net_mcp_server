@@ -20,6 +20,9 @@ from pydantic import Field
 from .actions import (
     AFFECTED_ASSETS_ARGUMENT,
     APPLY_ANSWER_ARGUMENT,
+    EMAIL_FROM_FIELD,
+    EMAIL_SUBJECT_FIELD,
+    EMAIL_TO_FIELD,
     SPECS_BY_NAME,
     ActionSpec,
     resolve_action_ids,
@@ -269,6 +272,16 @@ def register_action_tools(server: MCPServer, tools: "HelpdeskTools") -> None:
     async def send_email(
         ctx: Context,
         ticket_id: TicketId,
+        to: Annotated[
+            str,
+            Field(
+                description="Recipient address, e.g. the ticket owner's email address.",
+                min_length=3,
+            ),
+        ],
+        subject: Annotated[
+            str, Field(description='Subject of the email, e.g. "Re: " plus the ticket subject.')
+        ],
         text: Annotated[str, Field(description="Body of the email.")],
         send_mode: Annotated[
             Literal["SEND_ONLY", "SEND_AND_CLOSE", "SEND_AND_CLOSE_AFTER_X_DAYS"],
@@ -279,11 +292,26 @@ def register_action_tools(server: MCPServer, tools: "HelpdeskTools") -> None:
                 )
             ),
         ] = "SEND_ONLY",
+        mail_from: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "Mailbox to send from. Leave empty to use the server's configured "
+                    "default."
+                )
+            ),
+        ] = None,
         html_content: HtmlContent = False,
         step_fields: StepFields = None,
         action_arguments: ActionArguments = None,
         attachments: Attachments = None,
     ) -> dict[str, Any]:
+        fields = dict(step_fields or {})
+        fields[EMAIL_TO_FIELD] = to.strip()
+        fields[EMAIL_SUBJECT_FIELD] = subject
+        sender = mail_from or tools.settings.mail_from
+        if sender:
+            fields[EMAIL_FROM_FIELD] = sender
         arguments = dict(action_arguments or {})
         arguments.setdefault(APPLY_ANSWER_ARGUMENT, send_mode)
         return await apply(
@@ -292,7 +320,7 @@ def register_action_tools(server: MCPServer, tools: "HelpdeskTools") -> None:
             ticket_id,
             text=text,
             html_content=html_content,
-            step_fields=step_fields,
+            step_fields=fields,
             action_arguments=arguments,
             attachments=attachments,
         )
