@@ -133,6 +133,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--mail-from",
+        metavar="ADDRESS",
+        help=(
+            "Mailbox send_email sends from when a call names none, e.g. the "
+            "HelpDesk's support address."
+        ),
+    )
+    parser.add_argument(
         "--action-ids",
         metavar="TOOL=ID,...",
         help=(
@@ -202,6 +210,8 @@ def settings_from_args(args: argparse.Namespace) -> Settings:
         updates["denied_actions"] = parse_action_ids(args.denied_actions)
     if args.default_automail:
         updates["default_automail"] = args.default_automail
+    if args.mail_from:
+        updates["mail_from"] = args.mail_from
     if args.action_ids:
         updates["action_ids"] = parse_action_id_overrides(args.action_ids)
 

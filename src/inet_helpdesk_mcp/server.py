@@ -244,6 +244,7 @@ def build_server(settings: Settings) -> MCPServer:
             "allowed_actions": list(settings.allowed_actions),
             "denied_actions": list(settings.denied_actions),
             "default_automail": settings.default_automail,
+            "mail_from": settings.mail_from,
             "allow_local_file_attachments": settings.allow_local_files,
             "allow_base_url_header": settings.allow_url_header,
             "ignore_client_authorization": settings.ignore_client_auth,

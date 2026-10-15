@@ -36,6 +36,13 @@ CHANGE_FIELD_ACTION = "-29"
 APPLY_ANSWER_ARGUMENT = "ticketextension.applyanswer"
 APPLY_ANSWER_VALUES = ("SEND_ONLY", "SEND_AND_CLOSE", "SEND_AND_CLOSE_AFTER_X_DAYS")
 
+#: Step fields of an email sent with -7, as a step sent from the HelpDesk user
+#: interface carries them. Without a recipient the HelpDesk answers HTTP 500
+#: "Die E-Mail muss eine Empfängeradresse haben."
+EMAIL_TO_FIELD = "reastepemailan"
+EMAIL_SUBJECT_FIELD = "reastepdesc"
+EMAIL_FROM_FIELD = "reastepemailin"
+
 #: Action argument with the stringified list of asset GUIDs (Inventory plugin).
 AFFECTED_ASSETS_ARGUMENT = "inventory_affectedassets"
 
@@ -123,7 +130,7 @@ ACTION_SPECS: tuple[ActionSpec, ...] = (
     # -- mail and conversation -------------------------------------------------
     ActionSpec(
         "send_email", "-7", "E-Mail versenden", "Send email",
-        "Send `text` as an email answer to the ticket owner, optionally closing the "
+        "Send `text` as an email to the address in `to`, optionally closing the "
         "ticket. This mails a person outside the HelpDesk - confirm with the user first.",
     ),
     ActionSpec(

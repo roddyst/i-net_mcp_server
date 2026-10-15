@@ -131,6 +131,9 @@ class Settings:
     denied_actions: tuple[str, ...] = ()
     #: Value for the ticketextension.automail argument when the caller sets none.
     default_automail: str | None = None
+    #: Mailbox send_email sends from (step field reastepemailin) when the call
+    #: names none, e.g. the HelpDesk's support address.
+    mail_from: str | None = None
     #: Per-installation ticket action ids of the action tools, as (tool, id) pairs.
     action_ids: tuple[tuple[str, str], ...] = ()
     #: How many HelpDesk connections are kept alive at the same time.
@@ -175,6 +178,7 @@ class Settings:
             allowed_actions=parse_action_ids(_env("ALLOWED_ACTIONS")),
             denied_actions=parse_action_ids(_env("DENIED_ACTIONS")),
             default_automail=_env("DEFAULT_AUTOMAIL"),
+            mail_from=_env("MAIL_FROM"),
             action_ids=parse_action_id_overrides(_env("ACTION_IDS")),
             pool_size=pool_size if pool_size is not None else 8,
             url_header_explicit=allow_url_header is not None,

@@ -83,33 +83,56 @@ async def test_field_tools_go_through_change_field_action(
     }
 
 
-async def test_send_email_sets_the_apply_answer_argument(
+MAIL = {"ticket_id": "7", "to": "anna@example.com", "subject": "Re: Drucker", "text": "Hallo"}
+
+
+async def test_send_email_sends_recipient_subject_and_apply_answer(
     patched_client: RecordingHelpDesk,
 ) -> None:
-    await call(
-        build(),
-        "send_email",
-        {"ticket_id": "7", "text": "Hallo", "send_mode": "SEND_AND_CLOSE"},
-    )
+    """Without reastepemailan the HelpDesk answers HTTP 500 "Die E-Mail muss eine
+    Empfängeradresse haben." - verified against a live HelpDesk."""
+    await call(build(), "send_email", {**MAIL, "send_mode": "SEND_AND_CLOSE"})
 
     assert patched_client.last_json() == {
         "actionId": "-7",
         "text": "Hallo",
         "htmlContent": False,
+        "stepFields": {"reastepemailan": "anna@example.com", "reastepdesc": "Re: Drucker"},
         "actionArguments": {"ticketextension.applyanswer": "SEND_AND_CLOSE"},
     }
 
 
+async def test_send_email_uses_the_configured_mailbox(patched_client: RecordingHelpDesk) -> None:
+    await call(build(mail_from="support@example.com"), "send_email", MAIL)
+
+    assert patched_client.last_json()["stepFields"]["reastepemailin"] == "support@example.com"
+
+
+async def test_send_email_mailbox_of_the_call_wins(patched_client: RecordingHelpDesk) -> None:
+    await call(
+        build(mail_from="support@example.com"),
+        "send_email",
+        {**MAIL, "mail_from": "it@example.com"},
+    )
+
+    assert patched_client.last_json()["stepFields"]["reastepemailin"] == "it@example.com"
+
+
+async def test_send_email_needs_a_recipient(patched_client: RecordingHelpDesk) -> None:
+    arguments = {key: value for key, value in MAIL.items() if key != "to"}
+    with pytest.raises(ToolError):
+        await build().call_tool("send_email", arguments)
+    assert patched_client.requests == []
+
+
 async def test_send_email_rejects_an_unknown_send_mode(patched_client: RecordingHelpDesk) -> None:
     with pytest.raises(ToolError):
-        await build().call_tool(
-            "send_email", {"ticket_id": "7", "text": "x", "send_mode": "LATER"}
-        )
+        await build().call_tool("send_email", {**MAIL, "send_mode": "LATER"})
     assert patched_client.requests == []
 
 
 async def test_send_email_keeps_the_automail_default(patched_client: RecordingHelpDesk) -> None:
-    await call(build(default_automail="NEVER"), "send_email", {"ticket_id": "7", "text": "x"})
+    await call(build(default_automail="NEVER"), "send_email", MAIL)
 
     assert patched_client.last_json()["actionArguments"] == {
         "ticketextension.applyanswer": "SEND_ONLY",

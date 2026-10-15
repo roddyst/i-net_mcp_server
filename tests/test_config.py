@@ -259,6 +259,7 @@ def test_env_settings_for_the_guard_rails(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setenv("INET_ALLOWED_ACTIONS", "-9, -12")
     monkeypatch.setenv("INET_DENIED_ACTIONS", "-2")
     monkeypatch.setenv("INET_DEFAULT_AUTOMAIL", "never")
+    monkeypatch.setenv("INET_MAIL_FROM", "support@example.com")
 
     settings = Settings.from_env()
 
@@ -269,6 +270,7 @@ def test_env_settings_for_the_guard_rails(monkeypatch: pytest.MonkeyPatch) -> No
     assert settings.allowed_actions == ("-9", "-12")
     assert settings.denied_actions == ("-2",)
     assert settings.default_automail == "NEVER"
+    assert settings.mail_from == "support@example.com"
 
 
 def test_guard_rail_defaults() -> None:
