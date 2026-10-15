@@ -138,6 +138,7 @@ def test_guard_rail_switches() -> None:
             "--no-normalize",
             "--retries", "0",
             "--pool-size", "2",
+            "--concurrency", "4",
             "--dry-run",
             "--allowed-actions=-9,-12",
             "--denied-actions=-2",
@@ -149,6 +150,7 @@ def test_guard_rail_switches() -> None:
     assert settings.normalize is False
     assert settings.retries == 0
     assert settings.pool_size == 2
+    assert settings.concurrency == 4
     assert settings.dry_run is True
     assert settings.allowed_actions == ("-9", "-12")
     assert settings.denied_actions == ("-2",)

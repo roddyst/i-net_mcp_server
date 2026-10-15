@@ -100,6 +100,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="How many HelpDesk connections are kept alive at once (default 8).",
     )
     parser.add_argument(
+        "--concurrency",
+        type=int,
+        help="How many HelpDesk requests one tool call runs in parallel (default 10).",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help=(
@@ -202,6 +207,8 @@ def settings_from_args(args: argparse.Namespace) -> Settings:
         updates["retries"] = args.retries
     if args.pool_size is not None:
         updates["pool_size"] = args.pool_size
+    if args.concurrency is not None:
+        updates["concurrency"] = args.concurrency
     if args.dry_run:
         updates["dry_run"] = True
     if args.allowed_actions:

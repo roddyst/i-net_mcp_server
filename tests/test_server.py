@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 
 import pytest
@@ -42,6 +43,7 @@ async def test_tool_inventory() -> None:
         "server_info",
         "search_tickets",
         "get_ticket",
+        "get_tickets",
         "get_ticket_conversation",
         "list_ticket_actions",
         "list_ticket_steps",
@@ -87,6 +89,57 @@ async def test_get_ticket_tool(patched_client: RecordingHelpDesk) -> None:
 
     assert payload["fields"]["subject"] == "Welcome"
     assert patched_client.last_request.url.params["fields"] == "subject"
+
+
+async def test_get_tickets_reads_many_tickets_in_one_call(
+    patched_client: RecordingHelpDesk,
+) -> None:
+    for ticket_id in (1, 2):
+        patched_client.route(
+            "GET", f"/api/ticket/{ticket_id}", {"ticketId": ticket_id, "fields": {"subject": "Hi"}}
+        )
+
+    payload = await call(build(), "get_tickets", {"ticket_ids": ["1", "2", "3"]})
+
+    assert payload["requested"] == 3
+    assert payload["failed"] == 1
+    assert [ticket["ticketId"] for ticket in payload["tickets"]] == [1, 2, "3"]
+    assert "404" in payload["tickets"][2]["error"]
+    assert patched_client.requests[0].url.params["fields"] == (
+        "subject,statusid,priorityid,ownerid,lastchanged"
+    )
+
+
+async def test_get_tickets_runs_the_requests_in_parallel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    running = peak = 0
+
+    class SlowClient:
+        async def get_ticket(self, ticket_id: str, *, fields=None):
+            nonlocal running, peak
+            running += 1
+            peak = max(peak, running)
+            await asyncio.sleep(0.01)
+            running -= 1
+            return {"ticketId": int(ticket_id)}
+
+        async def aclose(self) -> None:
+            pass
+
+    monkeypatch.setattr("inet_helpdesk_mcp.server.HelpdeskClient", lambda *a, **k: SlowClient())
+
+    payload = await call(
+        build(concurrency=4), "get_tickets", {"ticket_ids": [str(i) for i in range(1, 13)]}
+    )
+
+    assert payload["failed"] == 0
+    assert peak == 4
+
+
+async def test_get_tickets_rejects_an_empty_list() -> None:
+    with pytest.raises(ToolError, match="between 1 and 500"):
+        await build().call_tool("get_tickets", {"ticket_ids": []})
 
 
 async def test_list_ticket_actions_tool(patched_client: RecordingHelpDesk) -> None:

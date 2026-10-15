@@ -255,6 +255,7 @@ def test_env_settings_for_the_guard_rails(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setenv("INET_NORMALIZE", "false")
     monkeypatch.setenv("INET_RETRIES", "5")
     monkeypatch.setenv("INET_POOL_SIZE", "3")
+    monkeypatch.setenv("INET_CONCURRENCY", "20")
     monkeypatch.setenv("INET_DRY_RUN", "yes")
     monkeypatch.setenv("INET_ALLOWED_ACTIONS", "-9, -12")
     monkeypatch.setenv("INET_DENIED_ACTIONS", "-2")
@@ -266,6 +267,7 @@ def test_env_settings_for_the_guard_rails(monkeypatch: pytest.MonkeyPatch) -> No
     assert settings.normalize is False
     assert settings.retries == 5
     assert settings.pool_size == 3
+    assert settings.concurrency == 20
     assert settings.dry_run is True
     assert settings.allowed_actions == ("-9", "-12")
     assert settings.denied_actions == ("-2",)
@@ -279,6 +281,7 @@ def test_guard_rail_defaults() -> None:
     assert settings.normalize is True
     assert settings.retries == 2
     assert settings.pool_size == 8
+    assert settings.concurrency == 10
     assert settings.dry_run is False
     assert settings.allowed_actions == ()
 
@@ -293,6 +296,7 @@ def test_an_unknown_automail_default_is_rejected_at_startup() -> None:
     [
         ({"retries": -1}, "must not be negative"),
         ({"pool_size": 0}, "at least one client"),
+        ({"concurrency": 0}, "At least one request"),
     ],
 )
 def test_impossible_values_are_rejected(kwargs: dict, message: str) -> None:
