@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "inet-helpdesk-mcp"
-version = "0.1.0"
+version = "0.1.0b1"
 description = "MCP server for the i-net HelpDesk Ticket Web-API (read, create and act on tickets from any AI agent)"
 readme = "README.md"
 requires-python = ">=3.10"
