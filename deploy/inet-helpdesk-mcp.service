@@ -21,7 +21,9 @@ ExecStart=/opt/inet-helpdesk-mcp/venv/bin/inet-helpdesk-mcp \
 Restart=on-failure
 RestartSec=5s
 
-# Der Dienst braucht weder Schreibrechte noch neue Privilegien.
+# Der Dienst braucht keine neuen Privilegien und schreibt nur nach
+# /var/lib/inet-helpdesk-mcp (INET_DOWNLOAD_DIR für download_attachment).
+StateDirectory=inet-helpdesk-mcp
 NoNewPrivileges=true
 PrivateTmp=true
 PrivateDevices=true
