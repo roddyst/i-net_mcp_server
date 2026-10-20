@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 
+import httpx
 import pytest
 from mcp.server.mcpserver.exceptions import ToolError
 
@@ -48,6 +49,7 @@ async def test_tool_inventory() -> None:
         "list_ticket_actions",
         "list_ticket_steps",
         "get_ticket_step",
+        "download_attachment",
         "find_unauthorized_tickets",
         "ticket_statistics",
         "create_ticket",
@@ -642,3 +644,109 @@ async def test_shutdown_closes_the_pooled_clients(
         pass
 
     assert created[0]._client.is_closed
+
+
+ATTACHMENT_URL = "Attachments/ticket/7/42/voice.WAV"
+WAV = b"RIFF\x00\x00\x00\x00WAVEfmt "
+
+
+def route_step_with_attachment(helpdesk: RecordingHelpDesk, url: str = ATTACHMENT_URL) -> None:
+    helpdesk.route(
+        "GET",
+        "/api/ticket/7/steps/42",
+        {
+            "id": 42,
+            "fields": {
+                "attachments": [
+                    {"name": "voice.WAV", "fileLength": len(WAV), "url": url},
+                ]
+            },
+        },
+    )
+
+
+def route_attachment_file(helpdesk: RecordingHelpDesk, *, accept_bearer: bool) -> None:
+    def handler(request):
+        authorization = request.headers.get("authorization", "")
+        bearer = accept_bearer and authorization.startswith("Bearer ")
+        if authorization.startswith("Basic ") or bearer:
+            return httpx.Response(200, content=WAV, headers={"content-type": "audio/wav"})
+        return httpx.Response(401, text="<html>login</html>")
+
+    helpdesk.routes[("GET", "/" + ATTACHMENT_URL)] = handler
+
+
+async def test_download_attachment_with_token(patched_client: RecordingHelpDesk) -> None:
+    route_step_with_attachment(patched_client)
+    route_attachment_file(patched_client, accept_bearer=True)
+
+    result = await call(build(), "download_attachment", {"ticket_id": "7", "step_id": "42"})
+
+    assert base64.b64decode(result["contentBase64"]) == WAV
+    assert result["size"] == len(WAV)
+    assert result["authentication"] == "request credentials"
+    assert "warning" not in result
+
+
+async def test_download_attachment_falls_back_to_web_login(
+    patched_client: RecordingHelpDesk,
+) -> None:
+    route_step_with_attachment(patched_client)
+    route_attachment_file(patched_client, accept_bearer=False)
+    server = build(web_username="DOMAIN\\svc", web_password="secret")
+
+    result = await call(server, "download_attachment", {"ticket_id": "7", "step_id": "42"})
+
+    assert base64.b64decode(result["contentBase64"]) == WAV
+    assert result["authentication"] == "web login DOMAIN\\svc"
+    assert patched_client.last_request.headers["authorization"].startswith("Basic ")
+
+
+async def test_download_attachment_without_web_login_explains_401(
+    patched_client: RecordingHelpDesk,
+) -> None:
+    route_step_with_attachment(patched_client)
+    route_attachment_file(patched_client, accept_bearer=False)
+
+    with pytest.raises(ToolError, match="INET_WEB_USERNAME"):
+        await build().call_tool("download_attachment", {"ticket_id": "7", "step_id": "42"})
+
+
+async def test_download_attachment_saves_to_directory(
+    patched_client: RecordingHelpDesk, tmp_path
+) -> None:
+    route_step_with_attachment(patched_client)
+    route_attachment_file(patched_client, accept_bearer=True)
+    server = build(download_dir=str(tmp_path))
+
+    result = await call(server, "download_attachment", {"ticket_id": "7", "step_id": "42"})
+
+    assert "contentBase64" not in result
+    assert result["savedTo"] == str(tmp_path / "7" / "42" / "voice.WAV")
+    assert (tmp_path / "7" / "42" / "voice.WAV").read_bytes() == WAV
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["https://evil.example.com/x", "Attachments/../api/x", "../secret", "Other/file.txt"],
+)
+async def test_download_attachment_refuses_foreign_urls(
+    patched_client: RecordingHelpDesk, url: str
+) -> None:
+    route_step_with_attachment(patched_client, url=url)
+
+    with pytest.raises(ToolError, match="refusing"):
+        await build(web_username="u", web_password="p").call_tool(
+            "download_attachment", {"ticket_id": "7", "step_id": "42"}
+        )
+    assert len(patched_client.requests) == 1  # only the step was read
+
+
+async def test_download_attachment_needs_name_for_several_files(
+    patched_client: RecordingHelpDesk,
+) -> None:
+    files = [{"name": "a.txt", "url": "Attachments/a"}, {"name": "b.txt", "url": "Attachments/b"}]
+    patched_client.route("GET", "/api/ticket/7/steps/42", {"fields": {"attachments": files}})
+
+    with pytest.raises(ToolError, match="a.txt, b.txt"):
+        await build().call_tool("download_attachment", {"ticket_id": "7", "step_id": "42"})

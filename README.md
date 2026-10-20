@@ -165,6 +165,7 @@ Fertige systemd-Unit, Env-File und Schritt-für-Schritt-Anleitung dafür:
 | `list_ticket_actions` | `GET /api/ticket/<id>/actions` | Aktuell erlaubte Ticketaktionen als Map „Id → Anzeigename". |
 | `list_ticket_steps` | `GET /api/ticket/<id>/steps` | Bearbeitungsschritte eines Tickets ohne Texte, optional ab Zeitstempel `since`. |
 | `get_ticket_step` | `GET /api/ticket/<id>/steps/<step-id>` | Ein Bearbeitungsschritt inklusive Text. |
+| `download_attachment` | `GET /<url>` aus `fields.attachments` eines Schritts | Lädt einen Anhang herunter, als base64 oder in `INET_DOWNLOAD_DIR`. Siehe [Anhänge herunterladen](#anhänge-herunterladen). |
 | `create_ticket` | `POST /api/ticket/create` | Neues Ticket anlegen, liefert die Ticket-Id. |
 | `apply_ticket_action` | `POST /api/ticket/<id>/apply` | Ticketaktion ausführen, liefert die Id des neuen Bearbeitungsschritts. |
 | `find_unauthorized_tickets` | `GET /api/ticket/<id>` je Id | Findet Anfragen in Status 0, die `search_tickets` nie liefert, indem ein Id-Bereich abgetastet wird (max. 500). |
@@ -243,6 +244,21 @@ deren Id gesperrt ist; `--dry-run` und `--default-automail` gelten für sie gena
 
 Ticket-Ids werden sowohl als Zahl als auch in der kodierten Form akzeptiert,
 die in den Betreffzeilen der HelpDesk-E-Mails steht.
+
+### Anhänge herunterladen
+
+Die Web-API nennt die Anhänge eines Bearbeitungsschritts in `fields.attachments`
+(`name`, `fileLength`, `url`); am Ticket zeigt `attachments: true`, dass es welche
+gibt. Die Datei selbst liefert aber nicht `/api`, sondern die Weboberfläche unter
+`/Attachments/...` — und die nimmt den Web-API-Token nicht an (HTTP 401), sondern
+nur Kerberos, NTLM oder Basic Auth.
+
+`download_attachment` versucht es deshalb zuerst mit den Zugangsdaten des Aufrufs
+und wiederholt die Anfrage bei 401 mit `INET_WEB_USERNAME`/`INET_WEB_PASSWORD`
+(Basic Auth, bei Windows-Konten als `DOMAIN\user`). Am besten ein eigenes
+Dienstkonto mit Leserechten verwenden. Der Schritt wird immer zuerst mit den
+Zugangsdaten des Aufrufs gelesen, damit nur Anhänge sichtbarer Tickets geladen
+werden, und nur `url`s unterhalb von `Attachments/` werden angefragt.
 
 ### Typischer Ablauf
 
@@ -347,6 +363,8 @@ Kommandozeile gewinnt.
 | `INET_BASE_URL` | `--base-url` | – | Basis-URL des HelpDesk, z. B. `https://helpdesk.example.com:9000` |
 | `INET_TOKEN` | `--token` | – | Access-Token für `Authorization: Bearer …` |
 | `INET_USERNAME` / `INET_PASSWORD` | `--username` / `--password` | – | Basic Auth als Alternative zum Token |
+| `INET_WEB_USERNAME` / `INET_WEB_PASSWORD` | `--web-username` / `--web-password` | – | Anmeldung an der Weboberfläche (z. B. `DOMAIN\user`) für `download_attachment`, wenn der Token für Anhangsdateien abgelehnt wird |
+| `INET_DOWNLOAD_DIR` | `--download-dir` | – | `download_attachment` speichert Dateien hier (`<dir>/<ticket>/<schritt>/<name>`), statt sie als base64 zurückzugeben |
 | `INET_TRANSPORT` | `--transport` | `stdio` | `stdio`, `http` oder `sse` |
 | `INET_HOST` | `--host` | `127.0.0.1` | Bind-Adresse der HTTP-Transporte |
 | `INET_PORT` | `--port` | `8000` | Port der HTTP-Transporte |

@@ -34,6 +34,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--username", help="User name for basic authentication.")
     parser.add_argument("--password", help="Password for basic authentication.")
     parser.add_argument(
+        "--web-username",
+        help=(
+            "User for the HelpDesk web interface, e.g. DOMAIN\\user. download_attachment "
+            "falls back to it when the bearer token is refused for attachment files."
+        ),
+    )
+    parser.add_argument("--web-password", help="Password of --web-username.")
+    parser.add_argument(
+        "--download-dir",
+        metavar="DIR",
+        help="Save downloaded attachments here instead of returning them as base64.",
+    )
+    parser.add_argument(
         "--transport",
         choices=["stdio", "http", "sse"],
         help="MCP transport (default: stdio). 'http' serves streamable HTTP.",
@@ -175,6 +188,12 @@ def settings_from_args(args: argparse.Namespace) -> Settings:
         updates["username"] = args.username
     if args.password:
         updates["password"] = args.password
+    if args.web_username:
+        updates["web_username"] = args.web_username
+    if args.web_password:
+        updates["web_password"] = args.web_password
+    if args.download_dir:
+        updates["download_dir"] = args.download_dir
     if args.transport:
         updates["transport"] = args.transport
     if args.host:

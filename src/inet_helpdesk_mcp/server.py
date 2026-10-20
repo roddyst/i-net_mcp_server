@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
+import os
+import re
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Mapping, Sequence
 
@@ -13,7 +16,7 @@ from mcp.types import ToolAnnotations
 from . import __version__
 from .action_tools import register_action_tools
 from .actions import describe_available
-from .attachments import Attachment, prepare_attachments
+from .attachments import MAX_ATTACHMENT_BYTES, Attachment, prepare_attachments
 from .client import ClientPool, HelpdeskClient
 from .config import RequestConfig, Settings, resolve_request_config
 from .errors import ApiError, HelpdeskError
@@ -253,6 +256,8 @@ def build_server(settings: Settings) -> MCPServer:
             "allow_base_url_header": settings.allow_url_header,
             "ignore_client_authorization": settings.ignore_client_auth,
             "tls": settings.describe_tls(),
+            "attachment_web_login": settings.web_username or None,
+            "download_dir": settings.download_dir,
         }
         try:
             config = tools.request_config(ctx)
@@ -556,6 +561,81 @@ def build_server(settings: Settings) -> MCPServer:
         return result
 
     @server.tool(
+        title="Download attachment",
+        description=(
+            "Download a file attached to an editing step. The step's `fields.attachments` "
+            "(see `get_ticket_step` or `get_ticket_conversation`) lists name, size and "
+            "url of each file; tickets with files have `attachments: true`. Without "
+            "`name` the step's only attachment is downloaded. The file comes back as "
+            "base64, or is saved on the server when it has a download directory."
+        ),
+        annotations=READ_ONLY_TOOL,
+    )
+    async def download_attachment(
+        ctx: Context,
+        ticket_id: str,
+        step_id: str,
+        name: str | None = None,
+        include_content: bool | None = None,
+    ) -> dict[str, Any]:
+        """Args:
+        ticket_id: Ticket id, either the plain number or the encoded form from email subjects.
+        step_id: Id of the editing step that carries the attachment.
+        name: File name as listed in the step's attachments; needed when there are several.
+        include_content: Return the file as base64. Defaults to true unless the
+            server saves downloads to a directory.
+        """
+        async with tools.client(ctx) as client:
+            # Reading the step with the caller's own credentials is the permission
+            # check: only attachments of steps the caller can see are downloaded.
+            step = await client.get_ticket_step(ticket_id, step_id)
+            attachment = _pick_attachment(step, name)
+            url = _attachment_url(attachment)
+            fallback = (
+                (settings.web_username, settings.web_password)
+                if settings.web_username and settings.web_password
+                else None
+            )
+            try:
+                content, content_type, used = await client.download_attachment(
+                    url, fallback_auth=fallback, max_bytes=MAX_ATTACHMENT_BYTES
+                )
+            except ApiError as exc:
+                if exc.status_code != 401:
+                    raise
+                raise HelpdeskError(
+                    f"The HelpDesk refused the download of {url!r} (HTTP 401). Attachment "
+                    "files are served by the web interface, which does not accept the "
+                    "Web-API token. Configure a web login with INET_WEB_USERNAME and "
+                    "INET_WEB_PASSWORD (or --web-username/--web-password)."
+                    + (" The configured web login was refused as well." if fallback else "")
+                ) from None
+
+        file_name = str(attachment.get("name") or url.rsplit("/", 1)[-1])
+        result: dict[str, Any] = {
+            "ticketId": ticket_id,
+            "stepId": step_id,
+            "name": file_name,
+            "size": len(content),
+            "contentType": content_type,
+            "url": url,
+            "authentication": used,
+        }
+        expected = attachment.get("fileLength")
+        if isinstance(expected, int) and expected != len(content):
+            result["warning"] = (
+                f"The step lists {expected} bytes, {len(content)} were downloaded."
+            )
+        if settings.download_dir:
+            target = _download_path(settings.download_dir, ticket_id, step_id, file_name)
+            await asyncio.to_thread(_write_file, target, content)
+            result["savedTo"] = target
+        if include_content if include_content is not None else not settings.download_dir:
+            result["contentBase64"] = base64.b64encode(content).decode("ascii")
+        tools.audit("download_attachment", ticket=ticket_id, step=step_id, name=file_name)
+        return result
+
+    @server.tool(
         title="Find unauthorized tickets",
         description=(
             "Find requests that still wait for authorization (status 0, 'Anfrage'). "
@@ -791,6 +871,66 @@ def build_server(settings: Settings) -> MCPServer:
     register_action_tools(server, tools)
 
     return server
+
+
+def _pick_attachment(step: Any, name: str | None) -> Mapping[str, Any]:
+    """The attachment *name* of a step record, or its only one."""
+    attachments: Any = None
+    if isinstance(step, Mapping):
+        fields = step.get("fields")
+        if isinstance(fields, Mapping):
+            attachments = fields.get("attachments")
+        if attachments is None:
+            attachments = step.get("attachments")
+    entries = [item for item in attachments or [] if isinstance(item, Mapping)]
+    if not entries:
+        raise HelpdeskError("This step has no attachments.")
+    if name is None:
+        if len(entries) > 1:
+            names = ", ".join(str(item.get("name")) for item in entries)
+            raise HelpdeskError(f"The step has several attachments, pass one as 'name': {names}")
+        return entries[0]
+    for item in entries:
+        if item.get("name") == name:
+            return item
+    names = ", ".join(str(item.get("name")) for item in entries)
+    raise HelpdeskError(f"No attachment {name!r} in this step. Available: {names}")
+
+
+def _attachment_url(attachment: Mapping[str, Any]) -> str:
+    """The relative download path of an attachment, checked to stay on the HelpDesk.
+
+    The web login of the fallback is sent along, so the path must not lead
+    anywhere but the HelpDesk's own attachment store.
+    """
+    url = str(attachment.get("url") or "").lstrip("/")
+    segments = url.split("/")
+    if (
+        not url.lower().startswith("attachments/")
+        or "://" in url
+        or "\\" in url
+        or any(segment in ("", ".", "..") for segment in segments)
+    ):
+        raise HelpdeskError(f"Unexpected attachment url {url!r}; refusing to download it.")
+    return url
+
+
+def _safe_segment(value: str) -> str:
+    """One file system path segment, without separators or leading dots."""
+    cleaned = re.sub(r"[^\w.\- ]", "_", value).strip().lstrip(".")
+    return cleaned or "attachment"
+
+
+def _download_path(directory: str, ticket_id: str, step_id: str, name: str) -> str:
+    return os.path.join(
+        directory, _safe_segment(ticket_id), _safe_segment(step_id), _safe_segment(name)
+    )
+
+
+def _write_file(path: str, content: bytes) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as handle:
+        handle.write(content)
 
 
 def _dry_run(
