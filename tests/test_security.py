@@ -412,3 +412,53 @@ def test_audit_values_cannot_forge_log_lines(caplog: pytest.LogCaptureFixture) -
         tools.audit("apply", ticket="1\n2026-01-01 INFO forged entry", action="-9")
 
     assert "\n" not in caplog.records[-1].getMessage()
+
+
+# -- attachment downloads ---------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "Attachments/../api/users",
+        "Attachments/%2e%2e/api/users",
+        "Attachments/..%2Fapi",
+        "Attachments/a%5c..%5cb",
+        "Attachments/a?x=1",
+        "Attachments/a#b",
+        "https://evil.example/Attachments/a",
+        "//evil.example/Attachments/a",
+        "api/ticket/1",
+        "",
+    ],
+)
+def test_attachment_urls_must_stay_in_the_attachment_store(url: str) -> None:
+    from inet_helpdesk_mcp.server import _attachment_url
+
+    with pytest.raises(HelpdeskError, match="Unexpected attachment url"):
+        _attachment_url({"url": url})
+
+
+def test_ordinary_attachment_urls_pass() -> None:
+    from inet_helpdesk_mcp.server import _attachment_url
+
+    assert _attachment_url({"url": "/Attachments/12/My%20File.pdf"}) == "Attachments/12/My%20File.pdf"
+
+
+async def test_a_redirected_download_is_not_returned_as_the_file(
+    helpdesk: RecordingHelpDesk,
+) -> None:
+    helpdesk.routes[("GET", "/Attachments/1/a.pdf")] = lambda request: httpx.Response(
+        302, headers={"location": "http://169.254.169.254/"}, content=b"login page"
+    )
+
+    with pytest.raises(TransportError, match="redirect"):
+        await helpdesk.client().download_attachment("Attachments/1/a.pdf", max_bytes=1000)
+
+
+def test_downloads_cannot_be_written_outside_the_download_directory() -> None:
+    from inet_helpdesk_mcp.server import _download_path
+
+    path = _download_path("/var/lib/dl", "../..", "..", "../../etc/passwd")
+    assert os.path.commonpath([os.path.normpath(path), "/var/lib/dl"]) == "/var/lib/dl"
+    assert ".." not in path.split(os.sep)

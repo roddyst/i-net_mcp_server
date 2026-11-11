@@ -233,6 +233,61 @@ class HelpdeskClient:
             params={"fields": fields},
         )
 
+    async def download_attachment(
+        self,
+        url: str,
+        *,
+        fallback_auth: tuple[str, str] | None = None,
+        max_bytes: int,
+    ) -> tuple[bytes, str | None, str]:
+        """GET /<url> of an attachment, as listed in a step's ``attachments``.
+
+        The files live in the web interface, not under /api, and it may refuse
+        the bearer token with 401. Then the request is repeated once with
+        *fallback_auth* (basic authentication). Returns the content, its content
+        type and which credentials worked.
+        """
+        attempts: list[tuple[str, httpx.Auth | None]] = [("request credentials", None)]
+        if fallback_auth:
+            attempts.append(
+                (f"web login {fallback_auth[0]}", httpx.BasicAuth(*fallback_auth))
+            )
+        path = "/" + url.lstrip("/")
+        for index, (label, auth) in enumerate(attempts):
+            extra = {"auth": auth} if auth is not None else {}
+            try:
+                async with self._client.stream("GET", path, **extra) as response:
+                    if response.status_code == 401 and index + 1 < len(attempts):
+                        continue
+                    if 300 <= response.status_code < 400:
+                        # Redirects are never followed (see __init__); the body of
+                        # one must not be handed out as the file either.
+                        raise TransportError(
+                            f"The HelpDesk answered the download of {url!r} with a "
+                            f"redirect (HTTP {response.status_code}) to "
+                            f"{response.headers.get('location', '<no Location header>')!r}, "
+                            "which is not followed."
+                        )
+                    if response.status_code >= 400:
+                        await response.aread()
+                        raise ApiError(response.status_code, "GET", path, response.text)
+                    chunks: list[bytes] = []
+                    size = 0
+                    async for chunk in response.aiter_bytes():
+                        size += len(chunk)
+                        if size > max_bytes:
+                            raise TransportError(
+                                f"Attachment {url!r} is larger than "
+                                f"{max_bytes // (1024 * 1024)} MB."
+                            )
+                        chunks.append(chunk)
+                    return b"".join(chunks), response.headers.get("content-type"), label
+            except httpx.HTTPError as exc:
+                raise TransportError(
+                    f"Could not download {url!r} from {self._config.base_url}: {exc}"
+                ) from exc
+        raise AssertionError("unreachable")  # pragma: no cover
+
     async def create_ticket(
         self,
         payload: Mapping[str, Any],

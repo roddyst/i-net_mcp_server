@@ -164,6 +164,12 @@ class Settings:
     token: str | None = None
     username: str | None = None
     password: str | None = None
+    #: Login for the HelpDesk web interface. Attachment files are served there
+    #: (/Attachments/...), which does not accept the Web-API bearer token.
+    web_username: str | None = None
+    web_password: str | None = field(default=None, repr=False)
+    #: Directory download_attachment saves files to; unset returns them as base64.
+    download_dir: str | None = None
     transport: str = "stdio"
     host: str = "127.0.0.1"
     port: int = 8000
@@ -229,6 +235,9 @@ class Settings:
             token=_env("TOKEN") or _env("API_TOKEN"),
             username=_env("USERNAME"),
             password=_env("PASSWORD"),
+            web_username=_env("WEB_USERNAME"),
+            web_password=_env("WEB_PASSWORD"),
+            download_dir=_env("DOWNLOAD_DIR"),
             transport=(_env("TRANSPORT") or "stdio").lower(),
             host=_env("HOST") or "127.0.0.1",
             port=port if port is not None else 8000,
