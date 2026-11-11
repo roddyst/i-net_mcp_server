@@ -57,9 +57,30 @@ def test_http_transport_disables_local_files() -> None:
     assert settings.allow_local_files is False
 
 
-def test_stdio_keeps_local_files_unless_switched_off() -> None:
-    assert parse(["--base-url", "https://hd"]).allow_local_files is True
-    assert parse(["--base-url", "https://hd", "--no-local-files"]).allow_local_files is False
+def test_stdio_reads_local_files_only_when_released(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert parse(["--base-url", "https://hd"]).allow_local_files is False
+
+    released = parse(["--base-url", "https://hd", "--attachment-dir", str(tmp_path)])
+    assert released.allow_local_files is True
+    assert released.attachment_dirs == (str(tmp_path),)
+    assert (
+        parse(
+            ["--base-url", "https://hd", "--attachment-dir", str(tmp_path), "--no-local-files"]
+        ).allow_local_files
+        is False
+    )
+
+    monkeypatch.setenv("INET_ALLOW_LOCAL_FILES", "true")
+    everything = parse(["--base-url", "https://hd"])
+    assert everything.allow_local_files is True
+    assert any("any file" in warning for warning in everything.security_warnings())
+
+
+def test_a_missing_attachment_directory_is_a_configuration_error(tmp_path: pathlib.Path) -> None:
+    with pytest.raises(ConfigurationError, match="does not exist"):
+        parse(["--base-url", "https://hd", "--attachment-dir", str(tmp_path / "nope")])
 
 
 def test_read_only_and_tls_switches() -> None:

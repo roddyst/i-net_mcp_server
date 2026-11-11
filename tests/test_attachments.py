@@ -41,7 +41,7 @@ def test_local_file_attachment_rejected_when_disabled(tmp_path: Path) -> None:
     path = tmp_path / "report.pdf"
     path.write_bytes(b"x")
 
-    with pytest.raises(HelpdeskError, match="disabled for this transport"):
+    with pytest.raises(HelpdeskError, match="disabled on this server"):
         prepare_attachments([Attachment(path=str(path))], allow_local_files=False)
 
 

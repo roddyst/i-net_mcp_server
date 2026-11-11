@@ -56,7 +56,7 @@ class RecordingHelpDesk:
         http_client = httpx.AsyncClient(
             base_url=config.base_url,
             transport=transport,
-            follow_redirects=True,
+            follow_redirects=False,
             auth=(
                 (config.username, config.password)
                 if config.username and config.password

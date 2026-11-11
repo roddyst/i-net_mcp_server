@@ -12,6 +12,7 @@ import logging
 import os
 from dataclasses import dataclass, field, replace
 from typing import Mapping
+from urllib.parse import urlsplit
 
 from .actions import parse_action_id_overrides
 from .errors import AuthenticationError, ConfigurationError
@@ -81,21 +82,78 @@ def ca_bundle_from_env() -> str | None:
     return None
 
 
+#: Shortest accepted INET_CLIENT_KEY; shorter ones can be guessed.
+MIN_CLIENT_KEY_LENGTH = 16
+
+_LOOPBACK_HOSTS = ("localhost", "::1", "[::1]")
+
+
+def is_loopback(host: str | None) -> bool:
+    """True for an address that only this machine can reach."""
+    host = (host or "").strip().lower()
+    return host in _LOOPBACK_HOSTS or host.startswith("127.")
+
+
 def normalize_base_url(base_url: str) -> str:
     """Return *base_url* without a trailing slash and with an explicit scheme."""
-    url = base_url.strip().rstrip("/")
-    if not url:
+    url = base_url.strip()
+    if not url.rstrip("/"):
         raise ConfigurationError("The i-net HelpDesk base URL must not be empty.")
     if "://" not in url:
         url = "http://" + url
+    url = url.rstrip("/")
     if not url.startswith(("http://", "https://")):
         raise ConfigurationError(
             f"The i-net HelpDesk base URL must use http or https, got {base_url!r}."
+        )
+    # The URL may come from a request header. Only scheme, host, port and a
+    # context path are accepted: credentials in the URL would be sent along,
+    # and a query or fragment would swallow the API path appended later.
+    try:
+        parts = urlsplit(url)
+        parts.port  # noqa: B018 - raises ValueError for a port that is no number
+    except ValueError as exc:
+        raise ConfigurationError(f"The i-net HelpDesk base URL {base_url!r} is malformed.") from exc
+    if (
+        not parts.hostname
+        or parts.username is not None
+        or parts.password is not None
+        or parts.query
+        or parts.fragment
+        or "?" in url
+        or "#" in url
+        or "\\" in url
+        or any(char.isspace() or not char.isprintable() for char in url)
+    ):
+        raise ConfigurationError(
+            f"The i-net HelpDesk base URL must consist of scheme, host, port and an "
+            f"optional path only, got {base_url!r}."
         )
     # Tolerate people pasting the API path itself.
     if url.endswith("/api"):
         url = url[: -len("/api")]
     return url
+
+
+def _url_key(url: str) -> str:
+    """A base URL in the form two spellings of the same server share."""
+    parts = urlsplit(url)
+    port = parts.port or (443 if parts.scheme == "https" else 80)
+    return f"{parts.scheme.lower()}://{(parts.hostname or '').lower()}:{port}{parts.path}"
+
+
+def parse_base_urls(raw: str | None) -> tuple[str, ...]:
+    """Split a comma separated list of HelpDesk base URLs."""
+    if not raw:
+        return ()
+    return tuple(normalize_base_url(part) for part in raw.split(",") if part.strip())
+
+
+def parse_directories(raw: str | None) -> tuple[str, ...]:
+    """Split a list of directories, separated like PATH (``:`` or ``;`` on Windows)."""
+    if not raw:
+        return ()
+    return tuple(part.strip() for part in raw.split(os.pathsep) if part.strip())
 
 
 @dataclass(frozen=True)
@@ -109,7 +167,7 @@ class Settings:
     #: Login for the HelpDesk web interface. Attachment files are served there
     #: (/Attachments/...), which does not accept the Web-API bearer token.
     web_username: str | None = None
-    web_password: str | None = None
+    web_password: str | None = field(default=None, repr=False)
     #: Directory download_attachment saves files to; unset returns them as base64.
     download_dir: str | None = None
     transport: str = "stdio"
@@ -121,7 +179,15 @@ class Settings:
     #: CA bundle used instead of the certifi default, e.g. an internal company CA.
     ca_bundle: str | None = None
     allow_local_files: bool = True
+    #: Directories a local attachment has to lie in. Without any, local files
+    #: are only read when the operator switched them on explicitly.
+    attachment_dirs: tuple[str, ...] = ()
     allow_url_header: bool = False
+    #: The HelpDesk servers a client may select with X-Inet-Base-Url; empty
+    #: means any address.
+    allowed_base_urls: tuple[str, ...] = ()
+    #: Shared secret every client of the HTTP transports has to present.
+    client_key: str | None = field(default=None, repr=False)
     ignore_client_auth: bool = False
     read_only: bool = False
     default_locale: str = "en"
@@ -180,6 +246,9 @@ class Settings:
             verify_tls=True if verify_tls is None else verify_tls,
             ca_bundle=_env("CA_BUNDLE"),
             allow_local_files=True if allow_local_files is None else allow_local_files,
+            attachment_dirs=parse_directories(_env("ATTACHMENT_DIR")),
+            allowed_base_urls=parse_base_urls(_env("ALLOWED_BASE_URLS")),
+            client_key=_env("CLIENT_KEY"),
             allow_url_header=bool(allow_url_header),
             ignore_client_auth=bool(_env_bool("IGNORE_CLIENT_AUTH")),
             read_only=bool(_env_bool("READ_ONLY")),
@@ -232,20 +301,35 @@ class Settings:
             raise ConfigurationError(
                 f"At least one request has to run at a time, got a concurrency of {self.concurrency}."
             )
+        if self.client_key is not None and len(self.client_key) < MIN_CLIENT_KEY_LENGTH:
+            raise ConfigurationError(
+                f"INET_CLIENT_KEY must have at least {MIN_CLIENT_KEY_LENGTH} characters; "
+                "generate one with: python3 -c 'import secrets; print(secrets.token_urlsafe(32))'"
+            )
+        for directory in self.attachment_dirs:
+            if not os.path.isdir(directory):
+                raise ConfigurationError(
+                    f"The attachment directory {directory!r} does not exist."
+                )
         if self.transport == "streamable-http":
             updates["transport"] = "http"
         transport = str(updates.get("transport", self.transport))
         # Without a configured base URL the client has to name the HelpDesk
-        # itself, so the X-Inet-Base-Url header is enabled by default there.
+        # itself, so the X-Inet-Base-Url header is enabled by default there -
+        # as it is when the operator lists the servers clients may choose from.
         # Derived, not sticky: a later --base-url turns it off again.
         if not self.url_header_explicit:
-            updates["allow_url_header"] = self.base_url is None
+            updates["allow_url_header"] = self.base_url is None or bool(self.allowed_base_urls)
         # Reading files from the server's disk only makes sense when agent and
-        # server share that disk, i.e. for the stdio transport.
+        # server share that disk, i.e. for the stdio transport. Even there it
+        # is off until the operator releases a directory (or all files): the
+        # path comes from the agent, and an agent that read a manipulated
+        # ticket could otherwise attach any file of this machine to a ticket
+        # or an email.
         if transport != "stdio":
             updates["allow_local_files"] = False
         elif not self.local_files_explicit:
-            updates["allow_local_files"] = True
+            updates["allow_local_files"] = bool(self.attachment_dirs)
         return replace(self, **updates) if updates else self
 
     @property
@@ -259,6 +343,48 @@ class Settings:
             denied=self.denied_actions,
             default_automail=self.default_automail,
         )
+
+    def security_warnings(self) -> list[str]:
+        """Settings that work but leave a door open; logged once at startup."""
+        warnings: list[str] = []
+        http = self.transport != "stdio"
+        exposed = http and not is_loopback(self.host)
+        if exposed and not self.client_key and self.has_credentials:
+            warnings.append(
+                f"The server listens on {self.host} and holds HelpDesk credentials, but "
+                "does not authenticate its clients: everyone who reaches the port acts "
+                "as the configured HelpDesk user. Set INET_CLIENT_KEY, bind to 127.0.0.1 "
+                "or put an authenticating reverse proxy in front."
+            )
+        if exposed and self.allow_url_header and not self.allowed_base_urls:
+            warnings.append(
+                f"The server listens on {self.host} and lets clients choose the target "
+                "with X-Inet-Base-Url: it can be used to send requests to any address "
+                "this machine reaches. Set INET_ALLOWED_BASE_URLS or a fixed INET_BASE_URL."
+            )
+        if exposed:
+            warnings.append(
+                "The server does not terminate TLS itself: tokens of the clients travel "
+                "unencrypted unless a reverse proxy with HTTPS sits in front."
+            )
+        if not self.verify_tls:
+            warnings.append(
+                "The certificate of the HelpDesk is not verified (--no-verify-tls): "
+                "credentials can be intercepted. Use --ca-bundle for an internal CA."
+            )
+        if self.base_url and self.base_url.startswith("http://"):
+            if not is_loopback(urlsplit(self.base_url).hostname):
+                warnings.append(
+                    f"The base URL {self.base_url} uses http: the HelpDesk credentials "
+                    "and all ticket data travel unencrypted. Use https:// if the "
+                    "HelpDesk offers it."
+                )
+        if self.allow_local_files and not self.attachment_dirs:
+            warnings.append(
+                "Local file attachments are allowed without INET_ATTACHMENT_DIR: the "
+                "agent can attach any file this process can read."
+            )
+        return warnings
 
     def tls_verify(self) -> str | bool:
         """How the HelpDesk certificate is verified, as the client's ``verify``.
@@ -337,6 +463,13 @@ def resolve_request_config(
                 "to let clients choose the HelpDesk server."
             )
         base_url = normalize_base_url(header_url)
+        if settings.allowed_base_urls and _url_key(base_url) not in {
+            _url_key(allowed) for allowed in settings.allowed_base_urls
+        }:
+            raise ConfigurationError(
+                "The HelpDesk server named in the X-Inet-Base-Url header is not one of "
+                "the servers this MCP server may connect to (INET_ALLOWED_BASE_URLS)."
+            )
     if not base_url:
         raise ConfigurationError(
             "No i-net HelpDesk base URL configured. Set INET_BASE_URL "

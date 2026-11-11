@@ -9,6 +9,7 @@ users. That is what this module decides; the tools in :mod:`server` only ask.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any, Mapping
 
@@ -22,11 +23,41 @@ AUTOMAIL_ARGUMENT = "ticketextension.automail"
 AUTOMAIL_VALUES = ("NEVER", "NO_MAILS_TO_ENDUSER", "SERVERSETTING", "ALWAYS")
 
 
+_ACTION_ID = re.compile(r"[+-]?[0-9]+")
+
+
+def canonical_action_id(action_id: Any) -> str:
+    """The one spelling of a ticket action id: ``" +05 "`` becomes ``"5"``.
+
+    Ticket action ids are integers. The allow and deny lists compare them as
+    text, so every other spelling of the same number - which the HelpDesk
+    would still understand - has to be folded into one before the comparison.
+    """
+    text = str(action_id).strip()
+    if not _ACTION_ID.fullmatch(text):
+        raise HelpdeskError(
+            f"{text[:40]!r} is not a ticket action id; ids are whole numbers such as -29 or 5."
+        )
+    return str(int(text))
+
+
 def parse_action_ids(raw: str | None) -> tuple[str, ...]:
-    """Split a comma separated list of ticket action ids into a tuple."""
+    """Split a comma separated list of ticket action ids into a tuple.
+
+    A typo is an error at startup: an entry of a deny list that is no action
+    id would otherwise simply never match.
+    """
     if not raw:
         return ()
-    return tuple(part.strip() for part in raw.split(",") if part.strip())
+    ids: list[str] = []
+    for part in raw.split(","):
+        if not part.strip():
+            continue
+        try:
+            ids.append(canonical_action_id(part))
+        except HelpdeskError as exc:
+            raise ConfigurationError(f"Invalid list of ticket action ids {raw!r}: {exc}") from exc
+    return tuple(ids)
 
 
 def validate_automail(value: str | None) -> str | None:
@@ -59,7 +90,10 @@ class ActionPolicy:
         return bool(self.allowed or self.denied)
 
     def permits(self, action_id: Any) -> bool:
-        action = str(action_id).strip()
+        try:
+            action = canonical_action_id(action_id)
+        except HelpdeskError:
+            return False
         if self.denied and action in self.denied:
             return False
         if self.allowed and action not in self.allowed:
