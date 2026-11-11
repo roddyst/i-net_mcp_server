@@ -9,9 +9,10 @@ from dataclasses import replace
 
 from . import __version__
 from .actions import parse_action_id_overrides
-from .config import Settings, normalize_base_url
+from .config import Settings, normalize_base_url, parse_base_urls
 from .errors import HelpdeskError
 from .policy import AUTOMAIL_VALUES, parse_action_ids
+from .http_auth import ClientKeyMiddleware
 from .server import build_server
 
 logger = logging.getLogger("inet_helpdesk_mcp")
@@ -30,9 +31,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--base-url",
         help="Base URL of the HelpDesk server, e.g. https://helpdesk.example.com:9000",
     )
-    parser.add_argument("--token", help="Access token used as 'Authorization: Bearer <token>'.")
+    parser.add_argument(
+        "--token",
+        help=(
+            "Access token used as 'Authorization: Bearer <token>'. Prefer INET_TOKEN: "
+            "command line arguments are visible to every user of the machine."
+        ),
+    )
     parser.add_argument("--username", help="User name for basic authentication.")
-    parser.add_argument("--password", help="Password for basic authentication.")
+    parser.add_argument(
+        "--password",
+        help="Password for basic authentication. Prefer INET_PASSWORD, see --token.",
+    )
     parser.add_argument(
         "--transport",
         choices=["stdio", "http", "sse"],
@@ -68,6 +78,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Let clients select the HelpDesk server with an X-Inet-Base-Url header.",
     )
     parser.add_argument(
+        "--allowed-base-urls",
+        metavar="URLS",
+        help=(
+            "Comma separated HelpDesk base URLs clients may select with "
+            "X-Inet-Base-Url. Without it the header accepts any address."
+        ),
+    )
+    parser.add_argument(
         "--ignore-client-auth",
         action="store_true",
         help=(
@@ -79,6 +97,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-local-files",
         action="store_true",
         help="Refuse attachments that reference a path on the server's file system.",
+    )
+    parser.add_argument(
+        "--attachment-dir",
+        metavar="DIR",
+        action="append",
+        help=(
+            "Directory from which attachments may be read by path (stdio transport). "
+            "Repeat for several directories. Without it, attachments by path are "
+            "refused unless INET_ALLOW_LOCAL_FILES=true releases every file."
+        ),
     )
     parser.add_argument("--locale", help="Default locale for ticket searches (default 'en').")
     parser.add_argument(
@@ -199,6 +227,10 @@ def settings_from_args(args: argparse.Namespace) -> Settings:
     if args.no_local_files:
         updates["allow_local_files"] = False
         updates["local_files_explicit"] = True
+    if args.attachment_dir:
+        updates["attachment_dirs"] = tuple(args.attachment_dir)
+    if args.allowed_base_urls:
+        updates["allowed_base_urls"] = parse_base_urls(args.allowed_base_urls)
     if args.locale:
         updates["default_locale"] = args.locale
     if args.no_normalize:
@@ -254,11 +286,16 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
 
+    for warning in settings.security_warnings():
+        logger.warning("Security: %s", warning)
+
     server = build_server(settings)
     logger.info("Starting i-net HelpDesk MCP server (%s)", settings.describe())
 
     if settings.transport == "stdio":
         server.run("stdio")
+    elif settings.client_key:
+        _serve_with_client_key(server, settings, args.log_level)
     elif settings.transport == "sse":
         server.run("sse", host=settings.host, port=settings.port)
     else:
@@ -269,6 +306,32 @@ def main(argv: list[str] | None = None) -> int:
             streamable_http_path=settings.http_path,
         )
     return 0
+
+
+def build_http_app(server, settings: Settings):
+    """The ASGI application of the HTTP transports, behind the client key check."""
+    if settings.transport == "sse":
+        app = server.sse_app(host=settings.host)
+    else:
+        app = server.streamable_http_app(
+            streamable_http_path=settings.http_path, host=settings.host
+        )
+    if settings.client_key:
+        app = ClientKeyMiddleware(
+            app, settings.client_key, accept_authorization=settings.ignore_client_auth
+        )
+    return app
+
+
+def _serve_with_client_key(server, settings: Settings, log_level: str) -> None:  # pragma: no cover
+    import uvicorn
+
+    uvicorn.run(
+        build_http_app(server, settings),
+        host=settings.host,
+        port=settings.port,
+        log_level=log_level.lower(),
+    )
 
 
 if __name__ == "__main__":  # pragma: no cover

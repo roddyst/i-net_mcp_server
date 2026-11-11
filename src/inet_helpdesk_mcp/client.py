@@ -12,11 +12,12 @@ import os
 import ssl
 from collections import OrderedDict
 from typing import Any, Callable, Mapping, Sequence
+from urllib.parse import quote
 
 import httpx
 
 from .config import RequestConfig
-from .errors import ApiError, TransportError
+from .errors import ApiError, HelpdeskError, TransportError
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +33,37 @@ RETRY_BACKOFF_SECONDS = 0.5
 #: One attachment as it is handed to the Web-API: the JSON description plus the
 #: raw bytes that are uploaded as ``attachment<N>``.
 AttachmentUpload = tuple[dict[str, Any], bytes]
+
+
+#: Longest ticket or step id that is put into a request path.
+MAX_ID_LENGTH = 128
+
+#: Characters that would let an id leave its path segment: separators, the
+#: start of a query or fragment, and percent signs (an already encoded "%2F").
+_UNSAFE_ID_CHARACTERS = frozenset("/\\?#%")
+
+
+def path_segment(value: Any, what: str = "ticket id") -> str:
+    """Return *value* as exactly one segment of a request path.
+
+    Ids come from the agent - and so, indirectly, from whatever text the agent
+    has read. Put into the path unchecked, ``../../other/endpoint?`` would send
+    the request, with the HelpDesk credentials, to any endpoint of the HelpDesk
+    instead of the ticket API, also from a read-only server.
+    """
+    text = str(value).strip()
+    if (
+        not text
+        or len(text) > MAX_ID_LENGTH
+        or text in (".", "..")
+        or any(char in _UNSAFE_ID_CHARACTERS or char.isspace() or not char.isprintable() for char in text)
+    ):
+        shown = text if len(text) <= 40 else text[:40] + "..."
+        raise HelpdeskError(
+            f"{shown!r} is not a valid {what}: pass the plain number or the encoded "
+            "form from an email subject, without slashes or other URL characters."
+        )
+    return quote(text, safe="")
 
 
 def build_ssl_verify(verify: str | bool) -> ssl.SSLContext | bool:
@@ -66,7 +98,10 @@ class HelpdeskClient:
             base_url=config.base_url,
             timeout=timeout,
             verify=build_ssl_verify(verify),
-            follow_redirects=True,
+            # Never follow redirects: the answer to a ticket request is not a
+            # redirect, and following one would send the next request wherever
+            # the answering host points - an internal address, for example.
+            follow_redirects=False,
             auth=(
                 (config.username, config.password)
                 if config.username and config.password
@@ -121,6 +156,14 @@ class HelpdeskClient:
                 continue
             break
 
+        if 300 <= response.status_code < 400:
+            target = response.headers.get("location", "<no Location header>")
+            raise TransportError(
+                f"The i-net HelpDesk at {self._config.base_url} answered {method} {path} "
+                f"with a redirect (HTTP {response.status_code}) to {target!r}. Redirects "
+                "are not followed; configure the base URL the HelpDesk really listens "
+                "on, including https:// and the port."
+            )
         if response.status_code >= 400:
             raise ApiError(response.status_code, method, path, response.text)
 
@@ -167,17 +210,17 @@ class HelpdeskClient:
     async def get_ticket(self, ticket_id: str, *, fields: str | None = None) -> Any:
         """GET /api/ticket/<ticket-id>"""
         return await self._request(
-            "GET", f"/api/ticket/{ticket_id}", params={"fields": fields}
+            "GET", f"/api/ticket/{path_segment(ticket_id)}", params={"fields": fields}
         )
 
     async def get_ticket_actions(self, ticket_id: str) -> Any:
         """GET /api/ticket/<ticket-id>/actions"""
-        return await self._request("GET", f"/api/ticket/{ticket_id}/actions")
+        return await self._request("GET", f"/api/ticket/{path_segment(ticket_id)}/actions")
 
     async def get_ticket_steps(self, ticket_id: str, *, since: int | None = None) -> Any:
         """GET /api/ticket/<ticket-id>/steps"""
         return await self._request(
-            "GET", f"/api/ticket/{ticket_id}/steps", params={"since": since}
+            "GET", f"/api/ticket/{path_segment(ticket_id)}/steps", params={"since": since}
         )
 
     async def get_ticket_step(
@@ -186,7 +229,7 @@ class HelpdeskClient:
         """GET /api/ticket/<ticket-id>/steps/<step-id>"""
         return await self._request(
             "GET",
-            f"/api/ticket/{ticket_id}/steps/{step_id}",
+            f"/api/ticket/{path_segment(ticket_id)}/steps/{path_segment(step_id, 'step id')}",
             params={"fields": fields},
         )
 
@@ -208,7 +251,7 @@ class HelpdeskClient:
     ) -> Any:
         """POST /api/ticket/<ticket-id>/apply"""
         return await self._post_with_attachments(
-            f"/api/ticket/{ticket_id}/apply", payload, attachments
+            f"/api/ticket/{path_segment(ticket_id)}/apply", payload, attachments
         )
 
     async def _post_with_attachments(

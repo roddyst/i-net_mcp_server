@@ -244,7 +244,11 @@ def parse_action_id_overrides(raw: str | None) -> tuple[tuple[str, str], ...]:
                 f"Unknown action tool {name!r} in the action id overrides. Known tools: "
                 f"{', '.join(sorted(SPECS_BY_NAME))}."
             )
-        overrides.append((name, action_id))
+        if not action_id.lstrip("+-").isascii() or not action_id.lstrip("+-").isdigit():
+            raise ConfigurationError(
+                f"Invalid action id {action_id!r} for {name}; ticket action ids are whole numbers."
+            )
+        overrides.append((name, str(int(action_id))))
     return tuple(overrides)
 
 

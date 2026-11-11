@@ -62,6 +62,10 @@ die() { printf '\033[1;31mError:\033[0m %s\n' "$*" >&2; exit 1; }
 
 [[ $EUID -eq 0 ]] || die "Please run as root (sudo $0 ...)."
 [[ "$PORT" =~ ^[0-9]+$ ]] || die "--port must be a number, got '$PORT'."
+# These values are written into the unit and into shell commands below.
+[[ "$HOST" =~ ^[A-Za-z0-9.:_-]+$ ]] || die "--host must be an address or host name, got '$HOST'."
+[[ "$REF" =~ ^[A-Za-z0-9._/-]+$ ]] || die "--ref must be a branch, tag or commit, got '$REF'."
+[[ "$PREFIX" =~ ^/[A-Za-z0-9._/-]+$ ]] || die "--prefix must be an absolute path without special characters, got '$PREFIX'."
 
 VENV="${PREFIX}/venv"
 BIN="${VENV}/bin/inet-helpdesk-mcp"
@@ -136,7 +140,10 @@ if [[ $INSTALL_SERVICE -eq 0 ]]; then
     exit 0
 fi
 
-chown -R "$SERVICE_USER:$SERVICE_USER" "$PREFIX"
+# The service only reads its installation: with root as the owner a
+# compromised service process cannot replace its own code.
+chown -R root:root "$PREFIX"
+chmod -R u=rwX,go=rX "$PREFIX"
 
 # -- configuration -------------------------------------------------------------
 
@@ -170,8 +177,8 @@ rm -f "$tmp"
 systemctl daemon-reload
 
 if [[ "$HOST" != "127.0.0.1" && "$HOST" != "localhost" && "$HOST" != "::1" ]]; then
-    warn "The service listens on ${HOST}. It does not authenticate clients itself -" \
-         "put a reverse proxy with TLS and authentication in front of it."
+    warn "The service listens on ${HOST}. Set INET_CLIENT_KEY in ${ENV_FILE} so that" \
+         "clients have to authenticate, and put a reverse proxy with TLS in front of it."
 fi
 
 # Do not start with the placeholders of the template: every call would fail.

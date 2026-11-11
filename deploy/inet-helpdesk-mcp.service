@@ -23,12 +23,17 @@ RestartSec=5s
 
 # Der Dienst braucht weder Schreibrechte noch neue Privilegien.
 NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0077
 PrivateTmp=true
 PrivateDevices=true
 ProtectSystem=strict
 ProtectHome=true
 ProtectKernelTunables=true
 ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectProc=invisible
 ProtectControlGroups=true
 ProtectClock=true
 ProtectHostname=true
@@ -36,6 +41,7 @@ RestrictSUIDSGID=true
 RestrictRealtime=true
 RestrictNamespaces=true
 LockPersonality=true
+RemoveIPC=true
 MemoryDenyWriteExecute=true
 SystemCallArchitectures=native
 SystemCallFilter=@system-service

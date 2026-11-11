@@ -128,10 +128,13 @@ HelpDesk-Instanzen, öffnet den Server aber als Proxy für beliebige Adressen �
 in einem offenen Netz deshalb besser eine feste `--base-url` setzen (dann ist
 der Header abgeschaltet, außer er wird mit `--allow-url-header` erlaubt).
 
-> **Hinweis zum Betrieb:** Der Server terminiert selbst kein TLS und
-> authentifiziert Clients nicht eigenständig — die Anmeldung passiert am
-> HelpDesk mit dem durchgereichten Token. Wenn er über das lokale Netz hinaus
-> erreichbar sein soll, gehört ein Reverse Proxy mit HTTPS davor.
+> **Hinweis zum Betrieb:** Der Server terminiert selbst kein TLS — die
+> Anmeldung passiert am HelpDesk mit dem durchgereichten Token, und der reist
+> ohne HTTPS im Klartext. Wenn der Server über die eigene Maschine hinaus
+> erreichbar sein soll, gehört ein Reverse Proxy mit HTTPS davor. Mit
+> `INET_CLIENT_KEY` verlangt der Server zusätzlich von jedem Client einen
+> Schlüssel im Header `X-Inet-Mcp-Key`; mit `INET_ALLOWED_BASE_URLS` lässt sich
+> `X-Inet-Base-Url` auf bestimmte HelpDesk-Systeme beschränken.
 
 ### Variante: fester Service-Account statt Token pro Nutzer
 
@@ -146,6 +149,10 @@ scheitert mit 401):
 INET_BASE_URL=https://helpdesk.example.com:9000 INET_TOKEN=… \
   inet-helpdesk-mcp --transport http --host 127.0.0.1 --port 8765 --ignore-client-auth
 ```
+
+Ohne weiteren Schutz kann jeder Prozess, der den Port erreicht, als dieser
+Benutzer handeln. `INET_CLIENT_KEY=<zufälliger Schlüssel>` schließt das: der
+Agent schickt den Schlüssel dann als `Authorization: Bearer <schlüssel>`.
 
 Fertige systemd-Unit, Env-File und Schritt-für-Schritt-Anleitung dafür:
 [`deploy/`](deploy/README.md). Installieren und Aktualisieren in einem Schritt:
@@ -330,10 +337,11 @@ Base64 **oder** als Pfad auf dem Dateisystem des Servers:
 ```
 
 `path` funktioniert nur im stdio-Modus, in dem Agent und Server dieselbe
-Maschine teilen; in den HTTP-Modi ist es automatisch abgeschaltet (und lässt
-sich mit `--no-local-files` auch für stdio deaktivieren). Erlaubte Werte für
-`attachment_type`: `Attachment`, `EmbeddedImage`, `Signature`, `Unknown`.
-Obergrenze pro Datei: 25 MB.
+Maschine teilen, und nur für Dateien in einem freigegebenen Verzeichnis:
+`--attachment-dir /tmp` (bzw. `INET_ATTACHMENT_DIR`) schaltet es ein. Ohne
+Freigabe lehnt der Server Dateipfade ab, in den HTTP-Modi immer. Erlaubte
+Werte für `attachment_type`: `Attachment`, `EmbeddedImage`, `Signature`,
+`Unknown`. Obergrenzen: 25 MB pro Datei, 20 Dateien und 50 MB pro Aufruf.
 
 ---
 
@@ -357,7 +365,10 @@ Kommandozeile gewinnt.
 | `INET_READ_ONLY` | `--read-only` | `false` | Schreibende Tools ausblenden |
 | `INET_ALLOW_URL_HEADER` | `--allow-url-header` | nur ohne `INET_BASE_URL` | `X-Inet-Base-Url`-Header erlauben |
 | `INET_IGNORE_CLIENT_AUTH` | `--ignore-client-auth` | `false` | `Authorization`-Header der Clients ignorieren und immer die konfigurierten Zugangsdaten verwenden |
-| `INET_ALLOW_LOCAL_FILES` | `--no-local-files` | `true` bei stdio, sonst `false` | Anhänge per Dateipfad erlauben |
+| `INET_ATTACHMENT_DIR` | `--attachment-dir` | – | Verzeichnis, aus dem Anhänge per Dateipfad gelesen werden dürfen (nur stdio; mehrere mit `:` trennen bzw. den Schalter wiederholen) |
+| `INET_ALLOW_LOCAL_FILES` | `--no-local-files` | `false`; `true`, sobald `INET_ATTACHMENT_DIR` gesetzt ist | Anhänge per Dateipfad erlauben. `true` ohne `INET_ATTACHMENT_DIR` gibt **jede** lesbare Datei frei |
+| `INET_ALLOWED_BASE_URLS` | `--allowed-base-urls` | – | HelpDesk-Systeme, die ein Client per `X-Inet-Base-Url` wählen darf, kommasepariert; ohne die Liste ist jede Adresse erlaubt |
+| `INET_CLIENT_KEY` | – | – | HTTP: Schlüssel (mind. 16 Zeichen), den jeder Client mitschicken muss — im Header `X-Inet-Mcp-Key`, mit `--ignore-client-auth` auch als `Authorization: Bearer …` |
 | `INET_LOCALE` | `--locale` | `en` | Standardsprache der Suchphrase |
 | `INET_NORMALIZE` | `--no-normalize` | `true` | Antworten aufbereiten (Anzeigewerte, ISO-Zeitstempel, HTML zu Text) |
 | `INET_RETRIES` | `--retries` | `2` | Wiederholungen eines fehlgeschlagenen `GET`; `POST` wird nie wiederholt |
@@ -435,6 +446,33 @@ das Feld `tls` von `server_info`.
 
 ## Sicherheitshinweise
 
+* **Ticketinhalte sind fremde Eingaben.** Betreff und Texte stammen oft aus
+  E-Mails von außen und können Anweisungen an den Agenten enthalten
+  („Prompt Injection"). Der Server begrenzt deshalb, was ein fehlgeleiteter
+  Agent anrichten kann: Ticket- und Schritt-Ids dürfen den Pfad der Ticket-API
+  nicht verlassen, Aktions-Ids werden vor dem Vergleich mit
+  `--allowed-actions`/`--denied-actions` normalisiert (`07`, `+7` und `7` sind
+  dieselbe Aktion), und Dateien liest der Server nur aus freigegebenen
+  Verzeichnissen. Die wirksamste Leitplanke bleibt ein HelpDesk-Benutzer mit
+  wenigen Rechten, dazu `--read-only` oder eine enge `--allowed-actions`-Liste.
+* **Anhänge per Dateipfad sind standardmäßig aus.** `--attachment-dir` gibt ein
+  Verzeichnis frei; symbolische Links, die aus ihm herausführen, werden
+  abgelehnt. `INET_ALLOW_LOCAL_FILES=true` ohne Verzeichnis gibt jede Datei
+  frei, die der Prozess lesen kann — ein Agent könnte dann z. B. einen
+  SSH-Schlüssel an ein Ticket hängen oder per `send_email` verschicken.
+* **HTTP-Betrieb:** Liegt ein Token auf dem Server, handelt jeder, der den Port
+  erreicht, mit dessen Rechten. `INET_CLIENT_KEY` verlangt von jedem Client
+  einen Schlüssel; an `127.0.0.1` gebunden prüft der Server außerdem `Host` und
+  `Origin` (Schutz vor DNS-Rebinding aus dem Browser). TLS terminiert ein
+  Reverse Proxy.
+* **`X-Inet-Base-Url`** macht den Server zum Proxy für beliebige Adressen.
+  `INET_ALLOWED_BASE_URLS` beschränkt den Header auf die genannten Systeme.
+  Weiterleitungen (HTTP 3xx) des HelpDesk werden nie verfolgt.
+* Beim Start protokolliert der Server riskante Einstellungen als
+  `WARNING … Security:` — etwa eine `http://`-Basis-URL, abgeschaltete
+  Zertifikatsprüfung oder einen Listener ohne Client-Schlüssel.
+* `--token` und `--password` sind über die Prozessliste für andere Benutzer der
+  Maschine sichtbar; besser `INET_TOKEN` bzw. `INET_PASSWORD` verwenden.
 * Zugangsdaten stehen in Umgebungsvariablen bzw. im `Authorization`-Header und
   werden nie geloggt.
 * Der Server macht genau das, was der angemeldete Benutzer darf — die

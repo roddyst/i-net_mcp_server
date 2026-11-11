@@ -117,6 +117,22 @@ Ein `Authorization`-Header ist nicht nötig — die Unit startet den Server mit
 `--ignore-client-auth`, er nutzt also immer den konfigurierten Service-Account
 und ignoriert Header, die der Agent für eigene Zwecke mitschickt.
 
+Empfohlen: in `/etc/inet-helpdesk-mcp/env` einen `INET_CLIENT_KEY` setzen. Dann
+nimmt der Server nur noch Anfragen mit diesem Schlüssel an, und der Agent
+schickt ihn als Bearer-Token mit:
+
+```json
+{
+  "mcpServers": {
+    "i-net-helpdesk": {
+      "type": "http",
+      "url": "http://127.0.0.1:8765/mcp",
+      "headers": { "Authorization": "Bearer <INET_CLIENT_KEY>" }
+    }
+  }
+}
+```
+
 ## Aktualisieren
 
 ```bash
@@ -133,10 +149,14 @@ systemctl restart inet-helpdesk-mcp
 
 ## Sicherheitsüberlegungen
 
-* **Der Listener gehört auf `127.0.0.1`.** Der Server prüft nicht, *wer* sich
-  verbindet — wer den Port erreicht, handelt mit den Rechten des hinterlegten
-  Service-Accounts. Auf `0.0.0.0` gehört er nur hinter einen Reverse Proxy mit
-  TLS und eigener Authentifizierung.
+* **Der Listener gehört auf `127.0.0.1`.** Ohne `INET_CLIENT_KEY` prüft der
+  Server nicht, *wer* sich verbindet — wer den Port erreicht (auch jeder andere
+  lokale Benutzer der Maschine), handelt mit den Rechten des hinterlegten
+  Service-Accounts. Mit `INET_CLIENT_KEY` muss jeder Client den Schlüssel
+  mitschicken. Auf `0.0.0.0` gehört der Dienst zusätzlich hinter einen Reverse
+  Proxy mit TLS, sonst reist der Schlüssel im Klartext.
+* **Die Installation gehört `root`.** Der Dienstbenutzer `inet-mcp` kann seinen
+  eigenen Code und die Env-Datei nur lesen, nicht verändern.
 * **Rechte des Service-Accounts klein halten.** Der Benutzer braucht das Recht
   „Web API"; alles darüber hinaus bestimmt, was ein fehlgeleiteter Agent
   anrichten kann. Für den Anfang ist ein Account mit Leserechten plus
