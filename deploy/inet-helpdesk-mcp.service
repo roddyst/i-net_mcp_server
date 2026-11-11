@@ -27,7 +27,6 @@ StateDirectory=inet-helpdesk-mcp
 NoNewPrivileges=true
 CapabilityBoundingSet=
 AmbientCapabilities=
-UMask=0077
 PrivateTmp=true
 PrivateDevices=true
 ProtectSystem=strict
